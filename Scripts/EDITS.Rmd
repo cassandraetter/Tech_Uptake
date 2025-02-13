@@ -1,0 +1,1582 @@
+---
+title: "Edits Notebook"
+author: "Cassandra Etter"
+date: "2024-11-15"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This is the data behind the EDITS work. It follows four steps. For Step 1 I look at uptake rates between 2010 and 2021 in three countries: US, UK and Germany. For the US, I use the PSID which tracks households between 2011- 2021 on a biannual basis. For Germany, I use SOEP which tracks households between 2010- 2021 on an annual basis, and for the UK I use Understanding Society which tracks households between 2010 - 2021 on an annual basis. All data was downloaded in September 2024 and cleaning files are on github.
+
+8 technologies selected are :Internet Access, own a smartphone, Home has Solar, Home switched from Gas/Coal/Wood to electric (fuel switching), Home renovation/ retrofitting, EV/ Hybrid car, Commuting habit (walking, biking), digital skills/ capabilities (daily use of internet).
+
+Note: Significant limitations on technologies surveyed. With better data, I could also do this for smart-meters, air conditioners, etc.
+
+```{r libraries,echo=FALSE}
+library(DiagrammeR)
+library(psidread)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(survey)
+library(priceR)
+library(readr)
+library(tidyverse)
+library(nls2)
+library(drc)
+library(forecast)
+library(nls2)
+library(Hmisc)
+
+```
+
+```{r load US, include=FALSE}
+# US Data 
+
+psid_varlist = c(
+        "FAMID_68 || [05]ER25009 [07]ER36009 [09]ER42009 [11]ER47309 [13]ER53009 [15]ER60009 [17]ER66009 [19]ER72009 [21]ER78009",
+              "num_child || [05]ER25020 [07]ER36020 [09]ER42020 [11]ER47320 [13]ER53020 [15]ER60021 [17]ER66021 [19]ER72021 [21]ER78021", 
+              "hh_state || [05]ER25004 [07]ER36004 [09]ER42004 [11]ER47304 [13]ER53004 [15]ER60004 [17]ER66004 [19]ER72004 [21]ER78004",
+        "hh_size || [05]ER25016 [07]ER36016 [09]ER42016 [11]ER47316 [13]ER53016         [15]ER60016 [17]ER66016 [19]ER72016 [21]ER78016", 
+         "hh_rooms || [05]ER25027 [07]ER36027 [09]ER42028 [11]ER47328 [13]ER53028 [15]ER60029 [17]ER66029 [19]ER72029 [21]ER78030", 
+        "hh_type || [05]ER25024 [07]ER36024 [09]ER42025 [11]ER47325 [13]ER53025 [15]ER60026 [17]ER66026 [19]ER72026 [21]ER78027", 
+        "govt_rt_all || [05]ER25074 [07]ER36076 [09]ER42091 [11]ER47399 [13]ER53099 [15]ER60100 [17]ER66102 [19]ER72102 [21]ER78103", 
+        "govt_rt_part || [05]ER25069 [07]ER36071 [09]ER42086 [11]ER47394 [13]ER53094 [15]ER60095 [17]ER66097 [19]ER72097 [21]ER78098",
+        "hh_own || [05]ER25028 [07]ER36028 [09]ER42029 [11]ER47329 [13]ER53029 [15]ER60030 [17]ER66030 [19]ER72030 [21]ER78031", 
+        "hh_value || [05]ER25029 [07]ER36029 [09]ER42030 [11]ER47330 [13]ER53030 [15]ER60031 [17]ER66031 [19]ER72031 [21]ER78032", 
+        "hh_a_util || [05]ER28037B1 [07]ER41027B1 [09]ER46971B1 [11]ER52395B1 [13]ER58212B1 [15]ER65419 [17]ER71497 [19]ER77531 [21]ER81858", 
+        "gas_exp || [05]ER25080 [07]ER36083 [09]ER42112 [11]ER47415 [13]ER53115 [15]ER60110 [17]ER66111 [19]ER72111 [21]ER78113", 
+        "gas_per_exp || [05]ER25081 [07]ER36084 [09]ER42113 [11]ER47416 [13]ER53116 [15]ER60111 [17]ER66112 [19]ER72112 [21]ER78114", 
+        "elec_exp || [05]ER25082 [07]ER36085 [09]ER42114 [11]ER47417 [13]ER53117 [15]ER60112 [17]ER66113 [19]ER72113 [21]ER78115", 
+        "elec_per_exp || [05]ER25083 [07]ER36086 [09]ER42115 [11]ER47418 [13]ER53118 [15]ER60113 [17]ER66114 [19]ER72114 [21]ER78116", 
+        "heat_method || [05]ER25077 [07]ER36079 [09]ER42108 [11]ER47429 [13]ER53129 [15]ER60124 [17]ER66125 [19]ER72125 [21]ER78127", 
+        "heat_method_2 || [05]ER25078 [07]ER36080 [09]ER42109 [11]ER47430 [13]ER53130 [15]ER60125 [17]ER66126 [19]ER72126 [21]ER78128", 
+        "heat_method_3 || [05]ER25079 [07]ER36081 [09]ER42110 [11]ER47431 [13]ER53131 [15]ER60126 [17]ER66127 [19]ER72127 [21]ER78129",
+        "govt_heat_assitance || [05]ER25093 [07]ER36098 [09]ER42127 [11]ER47433 [13]ER53133 [15]ER60128 [17]ER66129 [19]ER72129 [21]ER78131", 
+        "rp_eth || [05]ER27398 [07]ER40570 [09]ER46548 [11]ER51909 [13]ER57664 [15]ER64816 [17]ER70888 [19]ER76903 [21]ER81150", # nationality of reference person
+        "hh_income || [05]ER28037 [07]ER41027 [09]ER46935 [11]ER52343 [13]ER58152 [15]ER65349 [17]ER71426 [19]ER77448 [21]ER81775", 
+        "ref_wage || [05]ER25910 [07]ER36928 [09]ER42919 [11]ER48241 [13]ER53935 [15]ER60994 [17]ER67046 [19]ER73069 [21]ER79146", 
+        "spouse_wage || 05]ER26281 [07]ER37299 [09]ER43290 [11]ER48615 [13]ER54309 [15]ER61349 [17]ER67401 [19]ER73424 [21]ER79526", 
+        "ref_welfare || [05]ER27913 [07]ER40903 [09]ER46811 [11]ER52219 [13]ER58020 [15]ER65200 [17]ER71277 [19]ER77299 [21]ER81626", 
+        "spouse_welfare || [05]ER27986 [07]ER40976 [09]ER46884 [11]ER52292 [13]ER58095 [15]ER65288 [17]ER71365 [19]ER77387 [21]ER81714", 
+        "other_welfare || [05]ER28014 [07]ER41004 [09]ER46912 [11]ER52320 [13]ER58129 [15]ER65326 [17]ER71403 [19]ER77425 [21]ER81752", 
+        "housing_exp || [05]ER28037A5 [07]ER41027A5 [09]ER46971A5 [11]ER52395A5 [13]ER58212A5 [15]ER65414 [17]ER71491 [19]ER77520 [21]ER81847", 
+        "mortage_exp || [05]ER28037A6 [07]ER41027A6 [09]ER46971A6 [11]ER52395A6 [13]ER58212A6 [15]ER65415 [17]ER71492 [19]ER77521 [21]ER81848",
+        "rent_exp || [05]ER28037A7 [07]ER41027A7 [09]ER46971A7 [11]ER52395A7 [13]ER58212A7 [15]ER65416 [17]ER71494 [19]ER77525 [21]ER81852", 
+        "gas_a_exp || [05]ER28037B2 [07]ER41027B2 [09]ER46971B2 [11]ER52395B2 [13]ER58212B2 [15]ER65420 [17]ER71498 [19]ER77533 [21]ER81860", 
+        "elec_a_exp || [05]ER28037B3 [07]ER41027B3 [09]ER46971B3 [11]ER52395B3 [13]ER58212B3 [15]ER65421 [17]ER71499 [19]ER77534 [21]ER81861", 
+        "petrol_a_exp || [05]ER28037C5 [07]ER41027C5 [09]ER46971C5 [11]ER52395C5 [13]ER58212C5 [15]ER65432 [17]ER71510 [19]ER77552 [21]ER81879", 
+        "smartphone || [15]ER60135 [17]ER66136 [19]ER72136 [21]ER78138",
+        "cellphone || [15]ER60139 [17]ER66140 [19]ER72140 [21]ER78142",
+        "computer || [05]ER25094 [07]ER36099 [09]ER42128 [11]ER47434 [13]ER53134 [15]ER60131 [17]ER66132 [19]ER72132 [21]ER78134", 
+        "car || [05]ER25708 [07]ER36726 [09]ER42732 [11]ER48048 [13]ER53745 [15]ER60804 [17]ER66852 [19]ER72856 [21]ER78933", 
+        "hybrid || [11]ER48055 [13]ER53752 [15]ER60811 [17]ER66859 [19]ER72863 [21]ER78940",
+        "hybrid_2 || [11]ER48079 [13]ER53775 [15]ER60834 [17]ER66882 [19]ER72886 [21]ER78963",
+        "hybrid_3 || [11]ER48104 [13]ER53799 [15]ER60858 [17]ER66906 [19]ER72910 [21]ER78987", 
+        "hh_repair || [05]ER25808 [07]ER36826 [09]ER42817 [11]ER48139 [13]ER53833 [15]ER60892 [17]ER66944 [19]ER72948 [21]ER79025",
+        "internet || [15]ER60132 [17]ER66133 [19]ER72133 [21]ER78135", 
+        "weight || [05]ER28078 [07]ER41069 [09]ER47012 [11]ER52436 [13]ER58257 [15]ER65492 [17]ER71570 [19]ER77631 [21]ER81958"
+       ) 
+
+str_df <- psid_str(varlist = psid_varlist, type = "separated")
+
+input_directory <- "/Users/cassandraetter-wenzel/Documents/GitHub/PhD/Data/PSID/Packaged"
+output_directory <- "/Users/cassandraetter-wenzel/Documents/GitHub/PhD/Data/PSID/rda"
+
+psid_unzip(indir = input_directory, 
+           exdir = output_directory, 
+           zipped = TRUE, 
+           type = "package", 
+           filename = NA)
+##Fix PSID Read function 
+psid_read_fixed <- function (indir, str_df, idvars = NA, type, filename = NA)
+{
+  year <- ER30001 <- ER30002 <- famfid <- indfid <- wlthid <- NULL
+  year_toread <- str_df$year
+  varlist_toread <- unname(unlist(str_df[, c(2:ncol(str_df))]))
+  varlist_toread <- varlist_toread[!is.na(varlist_toread)]
+  temp_env <- new.env()
+  temp_env$key_tb <- dplyr::filter(psid_str(varlist = c("xsqnr || \t[69]ER30021 [70]ER30044 [71]ER30068 [72]ER30092 [73]ER30118 [74]ER30139 [75]ER30161 [76]ER30189 [77]ER30218 [78]ER30247 [79]ER30284 [80]ER30314 [81]ER30344 [82]ER30374 [83]ER30400 [84]ER30430 [85]ER30464 [86]ER30499 [87]ER30536 [88]ER30571 [89]ER30607 [90]ER30643 [91]ER30690 [92]ER30734 [93]ER30807 [94]ER33102 [95]ER33202 [96]ER33302 [97]ER33402 [99]ER33502 [01]ER33602 [03]ER33702 [05]ER33802 [07]ER33902 [09]ER34002 [11]ER34102 [13]ER34202 [15]ER34302 [17]ER34502 [19]ER34702 [21]ER34902",
+                                                        "rel2hh || [68]ER30003 [69]ER30022 [70]ER30045 [71]ER30069 [72]ER30093 [73]ER30119 [74]ER30140 [75]ER30162 [76]ER30190 [77]ER30219 [78]ER30248 [79]ER30285 [80]ER30315 [81]ER30345 [82]ER30375 [83]ER30401 [84]ER30431 [85]ER30465 [86]ER30500 [87]ER30537 [88]ER30572 [89]ER30608 [90]ER30644 [91]ER30691 [92]ER30735 [93]ER30808 [94]ER33103 [95]ER33203 [96]ER33303 [97]ER33403 [99]ER33503 [01]ER33603 [03]ER33703 [05]ER33803 [07]ER33903 [09]ER34003 [11]ER34103 [13]ER34203 [15]ER34303 [17]ER34503 [19]ER34703 [21]ER34903",
+                                                        "indfid || [68]ER30001 [69]ER30020 [70]ER30043 [71]ER30067 [72]ER30091 [73]ER30117 [74]ER30138 [75]ER30160 [76]ER30188 [77]ER30217 [78]ER30246 [79]ER30283 [80]ER30313 [81]ER30343 [82]ER30373 [83]ER30399 [84]ER30429 [85]ER30463 [86]ER30498 [87]ER30535 [88]ER30570 [89]ER30606 [90]ER30642 [91]ER30689 [92]ER30733 [93]ER30806 [94]ER33101 [95]ER33201 [96]ER33301 [97]ER33401 [99]ER33501 [01]ER33601 [03]ER33701 [05]ER33801 [07]ER33901 [09]ER34001 [11]ER34101 [13]ER34201 [15]ER34301 [17]ER34501 [19]ER34701 [21]ER34901",
+                                                        "famfid || [68]V3 [69]V442 [70]V1102 [71]V1802 [72]V2402 [73]V3002 [74]V3402 [75]V3802 [76]V4302 [77]V5202 [78]V5702 [79]V6302 [80]V6902 [81]V7502 [82]V8202 [83]V8802 [84]V10002 [85]V11102 [86]V12502 [87]V13702 [88]V14802 [89]V16302 [90]V17702 [91]V19002 [92]V20302 [93]V21602 [94]ER2002 [95]ER5002 [96]ER7002 [97]ER10002 [99]ER13002 [01]ER17002 [03]ER21002 [05]ER25002 [07]ER36002 [09]ER42002 [11]ER47302 [13]ER53002 [15]ER60002 [17]ER66002 [19]ER72002 [21]ER78002",
+                                                        "wlthid || [84]S101 [89]S201 [94]S301 [99]S401 [01]S501 [03]S601"),
+                                            type = "separated"), year %in% year_toread)
+  if (type == "package") {
+    ind_filename <- list.files(path = indir, pattern = "ind.*\\.rda")
+    load(file = file.path(indir, ind_filename), envir = temp_env)
+    matches <- ls(pattern = ".*ind.*", envir = temp_env)
+    if (length(matches) > 0) {
+      temp_env$ind_df <- get(matches[1], envir = temp_env)
+      rm(list = matches[1], envir = temp_env)
+    }
+    else {
+      stop("Please check if you have cross-year individual file in the directory")
+    }
+    psid_df <- dplyr::select(dplyr::mutate(dplyr::select(temp_env$ind_df,
+                                                         all_of(na.omit(c("ER30001", "ER30002", temp_env$key_tb$indfid,
+                                                                          temp_env$key_tb$xsqnr, temp_env$key_tb$rel2hh,
+                                                                          idvars)))), pid = ER30001 * 1000 + ER30002),
+                             -ER30001, -ER30002)
+    varlist_toread <- setdiff(varlist_toread, colnames(psid_df))
+    varlist_temp <- intersect(varlist_toread, colnames(temp_env$ind_df))
+    temp_env$indcy_df <- dplyr::select(dplyr::mutate(dplyr::select(temp_env$ind_df,
+                                                                   all_of(c("ER30001", "ER30002", varlist_temp))),
+                                                     pid = ER30001 * 1000 + ER30002), -ER30001, -ER30002)
+    psid_df <- dplyr::left_join(psid_df, temp_env$indcy_df,
+                                by = "pid")
+    rm(list = setdiff(ls(envir = temp_env), "key_tb"), envir = temp_env)
+    for (yr in str_df$year) {
+      famfid_yr <- unname(unlist(dplyr::select(dplyr::filter(temp_env$key_tb,
+                                                             year == yr), famfid)))
+      indfid_yr <- unname(unlist(dplyr::select(dplyr::filter(temp_env$key_tb,
+                                                             year == yr), indfid)))
+      wlthid_yr <- unname(unlist(dplyr::select(dplyr::filter(temp_env$key_tb,
+                                                             year == yr), wlthid)))
+      list_varyear <- unname(unlist(dplyr::select(dplyr::filter(str_df,
+                                                                year == yr), -year)))
+      list_varyear <- setdiff(list_varyear[!is.na(list_varyear)],
+                              colnames(psid_df))
+      if (length(list_varyear) > 0) {
+        if (is.na(wlthid_yr)) {
+          name_fam_df <- list.files(path = indir, pattern = paste(".*fam",
+                                                                  yr, ".*\\.rda", sep = ""))
+          load(file = paste(indir, name_fam_df, sep = "/"),
+               envir = temp_env)
+          matches <- ls(pattern = paste(".*fam", yr,
+                                        ".*", sep = ""), envir = temp_env)
+          if (length(matches) > 0) {
+            temp_env$fam_df <- dplyr::select(get(matches[1],
+                                                 envir = temp_env), all_of(c(famfid_yr,
+                                                                             list_varyear)))
+            rm(list = matches[1], envir = temp_env)
+          }
+          else {
+            stop("Please check if you have necessary family packaged file in the directory")
+          }
+        }
+        else {
+          name_fam_df <- list.files(path = indir, pattern = paste(".*fam",
+                                                                  yr, ".*\\.rda", sep = ""))
+          load(file = paste(indir, name_fam_df, sep = "/"),
+               envir = temp_env)
+          matches <- ls(pattern = paste(".*fam", yr,
+                                        ".*", sep = ""), envir = temp_env)
+          if (length(matches) > 0) {
+            temp_env$fam_df <- get(matches[1], envir = temp_env)
+            rm(list = matches[1], envir = temp_env)
+          }
+          else {
+            stop("Please check if you have necessary family packaged file in the directory")
+          }
+          name_wlth_df <- list.files(path = indir, pattern = paste(".*wlth",
+                                                                   yr, ".*\\.rda", sep = ""))
+          load(file = paste(indir, name_wlth_df, sep = "/"),
+               envir = temp_env)
+          matches <- ls(pattern = paste(".*wlth", yr,
+                                        ".*", sep = ""), envir = temp_env)
+          if (length(matches) > 0) {
+            temp_env$wlth_df <- get(matches[1], envir = temp_env)
+            rm(list = matches[1], envir = temp_env)
+          }
+          else {
+            stop("Please check if you have necessary wealth packaged file in the directory")
+          }
+          by_vector <- setNames(nm = famfid_yr, object = wlthid_yr)
+          temp_env$fam_df <- dplyr::select(dplyr::left_join(temp_env$fam_df,
+                                                            temp_env$wlth_df, by = by_vector), all_of(c(famfid_yr,
+                                                                                                        list_varyear)))
+        }
+        by_vector <- setNames(nm = indfid_yr, object = famfid_yr)
+        psid_df <- dplyr::left_join(psid_df, temp_env$fam_df,
+                                    by = by_vector)
+        rm(list = setdiff(ls(envir = temp_env), "key_tb"),
+           envir = temp_env)
+        message("Data for year ", yr, " has been added!")
+      }
+      else {
+        (next)(paste("No data for year ", yr, " has been added!",
+                     sep = ""))
+      }
+    }
+    rowSums(psid_df[, temp_env$key_tb$indfid])
+    psid_df <- psid_df[which(rowSums(psid_df[, temp_env$key_tb$indfid]) >
+                               0), ]
+  }
+  else if (type == "single") {
+    varlist_final <- union(varlist_toread, unname(unlist(temp_env$key_tb[,
+                                                                         c("xsqnr", "rel2hh", "indfid")])))
+    load(file = paste(indir, paste(sub("\\.zip$", "", filename),
+                                   ".rda", sep = ""), sep = "/"), envir = temp_env)
+    psid_df <- dplyr::select(dplyr::mutate(dplyr::select(get(sub("\\.zip$",
+                                                                 "", filename), envir = temp_env), all_of(na.omit(c("ER30001",
+                                                                                                                    "ER30002", varlist_final, idvars)))), pid = ER30001 *
+                                             1000 + ER30002), -ER30001, -ER30002)
+  }
+  else {
+    stop("Please specify whether your PSID data is 'package' or 'single'!")
+  }
+  return(psid_df)
+}
+
+## read and reshape dataframe 
+
+psid_df <- psid_read_fixed(indir = output_directory, str_df = str_df,idvars = c("ER30000"),type = "package", filename = NA)
+df <- psid_reshape(psid_df = psid_df, str_df = str_df, shape = "long", level = "household")
+
+## clean US 
+
+df_new <- df %>% 
+  mutate(
+    hh_state = replace(hh_state, hh_state == 0, NA),# Make US territories into NA
+    hh_rooms = replace(hh_rooms, hh_rooms %in% c(98, 99), NA),# Remove "don't know" on rooms
+    hh_own = replace(hh_own, hh_own == 8, NA),# NA for neither own nor rent (8)
+    hh_type = replace(hh_type, hh_type %in% c(7, 8, 9), NA), # Remove don't know on housing type
+    govt_rt_all = replace(govt_rt_all, govt_rt_all %in% c(8, 9, 0), NA), # remove dont know
+    govt_rt_part = replace(govt_rt_part, govt_rt_part %in% c(8, 9, 0), NA), # NA for dont know
+    hh_value = replace(hh_value, hh_value %in% c(999999998, 999999999, 0), NA),  # NA for specific invalid hh_value
+    gas_exp = replace(gas_exp, gas_exp %in% c(9997, 9998, 9999, 0), NA), # NA for DK and 
+    elec_exp = replace(elec_exp, elec_exp %in% c(9997, 9998, 9999, 0), NA), 
+    heat_method = replace(heat_method, heat_method %in% c(97, 98, 99, 0), NA), 
+    govt_heat_assitance = replace(govt_heat_assitance, govt_heat_assitance %in% c(9997, 9998, 9999, 0), NA), 
+    rp_eth = replace(rp_eth, rp_eth %in% c(97, 99, 0), NA), 
+    hh_income = replace(hh_income, hh_income <= 0, NA), ## survye has 0 as innapropriate, not no income
+    gas_a_exp = replace(gas_a_exp, gas_a_exp == 9999999, NA),
+    elec_a_exp = replace(elec_a_exp, elec_a_exp == 9999999, NA),
+    ref_wage = replace (ref_wage, ref_wage %in% c(9999997, 9999998, 9999999, 0), NA),
+    spouse_wage = replace(spouse_wage, spouse_wage %in% c(9999997, 9999998, 9999999, 0), NA), 
+    ref_welfare = replace(ref_welfare, ref_welfare %in% c(999997, 999998, 999999, 0), NA),
+    spouse_welfare = replace(spouse_welfare, spouse_welfare %in% c(999997, 999998, 999999, 0), NA),
+    other_welfare = replace(other_welfare, other_welfare %in% c(999997, 999998, 999999, 0), NA)
+  )
+
+### create ttlener
+
+filtered_subset <- df_new %>%
+  mutate(
+    ttlener = ifelse(!is.na(elec_a_exp) & !is.na(gas_a_exp), elec_a_exp + gas_a_exp,
+              ifelse(!is.na(elec_a_exp), elec_a_exp,
+              ifelse(!is.na(gas_a_exp), gas_a_exp, NA)))
+  )
+
+### clean data 
+
+filtered_subset <- filtered_subset %>%
+        filter(!(pid == 5491005 & year == 2009),
+               !(pid == 3038001 & year == 2005), 
+               !(pid == 2615032 & year == 2009), 
+               !(pid == 2391179 & year == 2007), 
+               !(pid == 1084007 & year == 2015),
+               !(pid == 620171 & year == 2013),
+               !(pid == 597003 & year == 2011))
+
+## create decile 
+
+filtered_subset <- filtered_subset %>%
+  filter(ttlener >= 1) %>%
+  filter(hh_income > 500) %>%
+  mutate(year = as.numeric(year)) %>%
+        group_by(year) %>%
+        mutate(decile = ntile(hh_income, 10)) %>%
+        ungroup()
+
+## create weighted decile 
+calculate_weighted_deciles <- function(hh_income, weights) {
+  Hmisc::wtd.quantile(hh_income, weights = weights, probs = seq(0, 1, by = 0.1), na.rm = TRUE)
+}
+
+filtered_subset <- filtered_subset %>%
+  group_by(year) %>%
+  mutate(
+    weighted_decile = cut(
+      hh_income,
+      breaks = calculate_weighted_deciles(hh_income, weight),
+      include.lowest = TRUE,
+      labels = FALSE
+    )
+  ) %>%
+  ungroup()
+
+  
+
+## create energy expenditure 
+filtered_subset <- filtered_subset %>%
+  arrange(pid, year) %>%
+  group_by(pid) %>%
+  mutate(
+    # Calculate 2-year average income
+    hh_income_2yr_avg = sapply(1:n(), function(i) {
+      if (i < 2) mean(hh_income[1:i], na.rm = TRUE)
+      else mean(hh_income[(i-1):i], na.rm = TRUE)
+    }),
+    
+    # Calculate energy expenditure percentages using 2-year average income
+    enexp = ifelse(hh_income_2yr_avg > 0, (ttlener / hh_income_2yr_avg) * 100, NA),
+    enexp_t = ifelse(hh_income_2yr_avg > 0, ((ttlener + petrol_a_exp) / hh_income_2yr_avg) * 100, NA)
+  ) %>%
+  ungroup() %>%
+  filter(enexp <= 100)
+
+## adjust for inflation 
+
+country <- "US"
+inflation_dataframe <- retrieve_inflation_data(country)
+countries_dataframe <- show_countries()
+
+adjust_for_inflation(100, 2005, country, to_date = 2021,
+inflation_dataframe = inflation_dataframe,
+countries_dataframe = countries_dataframe)
+
+filtered_subset <- filtered_subset %>%
+  mutate(adjusted_ttlener = adjust_for_inflation(ttlener, 
+                                                 year,
+                                                 country,
+                                                 to_date = 2021,
+                                                 inflation_dataframe = inflation_dataframe,
+                                                 countries_dataframe = countries_dataframe))%>%
+  mutate(adjusted_income = adjust_for_inflation(hh_income,
+                                                year,
+                                                country,
+                                                to_date = 2021,
+                                                inflation_dataframe = inflation_dataframe,
+                                                countries_dataframe = countries_dataframe)) %>%
+  mutate(adjusted_income_2yr = adjust_for_inflation(hh_income_2yr_avg,
+                                                    year,
+                                                    country,
+                                                    to_date = 2021,
+                                                    inflation_dataframe = inflation_dataframe,
+                                                    countries_dataframe = countries_dataframe))
+
+filtered_subset <- filtered_subset %>%
+  mutate(adjusted_enexp = ifelse(adjusted_income > 0, (adjusted_ttlener / adjusted_income) * 100, NA)) %>%
+  mutate(adjusted_enexp_2yr = ifelse(adjusted_income_2yr >0, (adjusted_ttlener / adjusted_income_2yr) * 100, NA))
+
+
+US <- filtered_subset
+
+write.csv(filtered_subset, "~/Documents/Github/PhD/Data/US_EDITS.csv")
+
+```
+
+```{r load UK DEU, include=FALSE}
+
+UK <- read_csv("~/Documents/Github/PhD/Data/UK_Clean.csv")
+DEU <- read_csv("~/Documents/Github/PhD/Data/DEU_Clean.csv", show_col_types = FALSE)
+
+```
+
+## Step 1: Uptake Rates
+
+This provides a snapshot for current uptake across the households assessing heterogeneity across income level.
+
+### U.S. Uptake Rates
+
+For the US, I have information for solar ownership, EV/ hybrid ownership, smartphone ownership, internet access, and commute habit. I create an additional variable on fuel switching by looking at heating method and seeing where moved from wood, oil, gas, coal to electric heating. I also create a variable for retrofitting based on home renovations and skills based on survey responses where RP responds they use the internet daily.
+
+Note: Smartphone ownership and digital skills questions were only added to the survey in 2015.
+
+```{r US Uptake Rates, echo=FALSE}
+US <- US %>%
+  group_by(pid) %>%
+  arrange(pid, year) %>%
+  mutate(
+    # Create a combined solar indicator
+    is_solar = heat_method == 6 | heat_method_2 == 6 | heat_method_3 == 6,
+    
+    # Track those who switched to electric
+    switched_to_electric = lag(heat_method) %in% c(1,3,4,5,10,11) & 
+                          heat_method == 2,
+    
+    # Track those always on electric
+    always_electric = all(heat_method == 2, na.rm = TRUE),
+    
+    # Track those who switched to solar (using any of the three methods)
+    switched_to_solar = lag(is_solar) == FALSE & is_solar == TRUE,
+    
+    # Track those always on solar
+    always_solar = all(is_solar, na.rm = TRUE),
+    
+    # Combined measures: either switched or always been on that method
+    using_electric = heat_method == 2,
+    using_solar = is_solar,
+    
+    # Switch years
+    switch_year_electric = case_when(
+      switched_to_electric ~ year,
+      TRUE ~ NA_real_
+    ),
+    switch_year_solar = case_when(
+      switched_to_solar ~ year,
+      TRUE ~ NA_real_
+    )
+  ) %>%
+  ungroup() %>%
+  filter(year > 2010)
+# For decile analysis:
+uptake_rates <- US %>%
+  group_by(year, decile) %>%
+  summarise(
+    total_households = n_distinct(pid),
+    
+    # Electric heating metrics
+    new_electric_switches = sum(switched_to_electric, na.rm = TRUE),
+    total_electric_users = sum(using_electric, na.rm = TRUE),
+    
+    # Solar heating metrics
+    new_solar_switches = sum(switched_to_solar, na.rm = TRUE),
+    total_solar_users = sum(using_solar, na.rm = TRUE),
+    
+    # Calculate rates
+    electric_switch_rate = (new_electric_switches / total_households) * 100,
+    total_electric_rate = (total_electric_users / total_households) * 100,
+    solar_switch_rate = (new_solar_switches / total_households) * 100,
+    total_solar_rate = (total_solar_users / total_households) * 100
+  ) %>%
+  ungroup()
+
+us_props <- US %>%
+  group_by(year, decile) %>%
+  summarise(
+    n_total = n(),
+    smartphone_prop = mean(smartphone == 1, na.rm = TRUE),
+    hybrid_prop = mean(hybrid == 1 | hybrid_2 == 1 | hybrid_3 == 1, na.rm = TRUE), # includes EVs 
+    solar_prop = mean(heat_method == 6 | heat_method_2 ==6 | heat_method_3 == 6, na.rm = TRUE),
+    internet_prop = mean(computer == 1, na.rm = TRUE),     # Computer ownership
+    repairs_prop = mean(hh_repair > 1, na.rm = TRUE), 
+    skills_prop = mean(internet == 1, na.rm = TRUE),       # Internet usage
+    fuel_switch_prop = mean(heat_method == 2 & 
+                           !(heat_method_2 %in% c(1,3,4,5,10,11) | 
+                             heat_method_3 %in% c(1,3,4,5,10,11)), na.rm = TRUE)
+  ) %>%
+  mutate(
+    smartphone_percent = smartphone_prop * 100,            # Remove duplicate line
+    hybrid_percent = hybrid_prop * 100,
+    solar_percent = solar_prop * 100, 
+    internet_percent = internet_prop * 100, 
+    repairs_percent = repairs_prop * 100, 
+    skills_percent = skills_prop * 100,
+    fuel_switch_percent = fuel_switch_prop * 100 
+  )
+
+
+us_props_long <- us_props %>%
+  dplyr::select(year, decile, smartphone_percent, hybrid_percent, solar_percent, 
+         internet_percent, repairs_percent, skills_percent, 
+         fuel_switch_percent) %>%
+  pivot_longer(
+    cols = c(smartphone_percent, hybrid_percent, solar_percent, 
+             internet_percent, repairs_percent, skills_percent, 
+             fuel_switch_percent),
+    names_to = "technology",
+    values_to = "percentage"
+  ) %>%
+  mutate(technology = factor(technology, 
+    levels = c("smartphone_percent", "hybrid_percent", "solar_percent", 
+               "internet_percent", "repairs_percent", "skills_percent", 
+               "fuel_switch_percent"),
+    labels = c("Smartphone", "Hybrid/EV", "Solar Panels", "Internet", 
+               "Home Renovations", "Digital Skills", "Clean Heating Switch")))
+# Create the plot
+ggplot(us_props_long, aes(x = decile, y = percentage, color = technology)) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~year) +
+  theme_minimal() +
+  labs(
+    title = "Technology Adoption by Income Decile in US",
+    x = "Income Decile",
+    y = "Percentage of Households (%)",
+    color = "Technology"
+  ) +
+  scale_x_continuous(breaks = 1:10) +
+  theme(
+    legend.position = "bottom",
+    legend.box = "vertical",
+    panel.grid.minor = element_blank()
+  ) +
+  guides(color = guide_legend(nrow = 2)) # Makes legend more compact
+
+# Plot across time
+ggplot(us_props_long, aes(x = year, y = percentage, color = technology)) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~decile) +
+  theme_minimal() +
+  labs(
+    title = "Technology Adoption Over Time by Income Decile",
+    x = "Year",
+    y = "Percentage of Households (%)",
+    color = "Technology"
+  ) +
+  theme(
+    legend.position = "bottom",
+    legend.box = "vertical",
+    panel.grid.minor = element_blank()
+  ) +
+  guides(color = guide_legend(nrow = 2))
+```
+
+Clean heating is interesting in that high income households had less electric only and marginally increased over 2011 - 2021 time period, though they still did increase within decile 9 and 10. Solar panel infiltration is lower than national average at 1% with EIA estimating 4%.
+
+### U.K. Uptake Rates
+
+For the UK, I have solar, EV/ hybrid, smartphone, internet, commute and skills. I create fuel switching in the same manner as for US, buy looking at home energy bills and looking for those households that switch from gas/coal to electric only.
+
+Solar question is only asked in 2009, 2012, 2018, and 2021. EV is asked in 2012, 2015, 2018, and 2021. Smartphone begins in 2013. Skills starts in 2011.
+
+```{r UK Uptake Rates, echo=FALSE}
+# UK proportions
+uk_props <- UK %>%
+  group_by(year, decile) %>%
+  summarise(
+    n_total = n(),
+    solar_prop = mean(solar1 %in% c("yes - fitted", "Yes - fitted"), na.rm = TRUE),
+    ev_prop = mean(carfuel1 %in% c("Electric / battery", "electric / battery", "Hybrid (petrol/electric)", "hybrid (petrol/electric)"), na.rm = TRUE),
+    smartphone_prop = mean(smartmob %in% c("Yes", "yes"), na.rm = TRUE ),
+    skills_prop = mean(netpuse %in% c("Every day", "every day") | netpusenew %in% c("Every day", "every day"), na.rm = TRUE),
+    internet_prop = mean(pcnet %in% c("yes", "Yes"), na.rm = TRUE),
+    commute_prop = mean(wktrvfar %in% c( "Cycle", "Bus/coach", "Walk", "Train", "Underground/Metro/Tram/Light railway", "underground/metro/tram/light railway", "Motorcycle/moped/scooter") | worktrav %in% c("Underground/Metro/Tram/Light railway", "Train", "cycle", "Walk", "underground/metro/tram/light railway (if england/scotland/wales)", "bus/coach", "Bus/coach", "train", "underground/metro/tram/light railway", "underground/metro/tram/light railway {if region = gb}", "Motorcycle/moped/scooter") , na.rm = TRUE),
+    fuel_switch_prop = mean(gaspay == "inapplicable" & duelpay == "inapplicable", na.rm = TRUE)
+  ) %>%
+  mutate(
+    solar_percent = solar_prop * 100,
+    ev_percent = ev_prop * 100,
+    smartphone_percent = smartphone_prop * 100, 
+    internet_percent = internet_prop * 100, 
+    commute_percent = commute_prop * 100,
+    skills_percent = skills_prop * 100, 
+    fuel_switch_percent = fuel_switch_prop * 100
+  )
+
+# Convert to long format with all technologies
+uk_props_long <- uk_props %>%
+  dplyr::select(year, decile, solar_percent, ev_percent, smartphone_percent, 
+         internet_percent, skills_percent, commute_percent, fuel_switch_percent) %>%
+  pivot_longer(
+    cols = c(solar_percent, ev_percent, smartphone_percent, 
+             internet_percent, skills_percent, commute_percent, fuel_switch_percent),
+    names_to = "technology",
+    values_to = "percentage"
+  ) %>%
+  mutate(technology = factor(technology, 
+    levels = c("ev_percent", "solar_percent", "smartphone_percent", 
+               "internet_percent", "skills_percent", "commute_percent", "fuel_switch_percent"),
+    labels = c("Electric Vehicle", "Solar Panels", "Smartphone", 
+               "Internet", "Digital Skills", "Sustainable Transport", "Clean Heating Switch")))
+
+ggplot(uk_props_long, aes(x = decile, y = percentage, color = technology)) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~year) +
+  theme_minimal() +
+  labs(
+    title = "Technology Adoption by Income Decile in UK",
+    x = "Income Decile",
+    y = "Percentage of Households (%)",
+    color = "Technology"
+  ) +
+  scale_x_continuous(breaks = 1:10) +
+  theme(
+    legend.position = "bottom",
+    legend.box = "vertical",
+    panel.grid.minor = element_blank()
+  ) +
+  guides(color = guide_legend(nrow = 2)) # Makes legend more compact
+
+ggplot(uk_props_long[uk_props_long$percentage != 0, ], aes(x = year, y = percentage, color = technology)) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~decile) +
+  theme_minimal() +
+  labs(
+    title = "Technology Adoption Over Time by Income Decile UK",
+    x = "Year",
+    y = "Percentage of Households (%)",
+    color = "Technology"
+  ) +
+  theme(
+    legend.position = "bottom",
+    legend.box = "vertical",
+    panel.grid.minor = element_blank()
+  ) +
+  guides(color = guide_legend(nrow = 2))
+
+# Alternative visualization: Faceted plot for clearer viewing
+ggplot(uk_props_long, aes(x = decile, y = percentage)) +
+  geom_line(color = "grey70") +
+  geom_point(aes(color = technology), size = 3) +
+  facet_grid(technology ~ year) +
+  theme_minimal() +
+  labs(
+    title = "Technology Adoption by Income Decile in UK",
+    x = "Income Decile",
+    y = "Percentage of Households (%)"
+  ) +
+  scale_x_continuous(breaks = seq(2, 10, 2)) +
+  theme(
+    legend.position = "none",
+    panel.grid.minor = element_blank(),
+    strip.text = element_text(face = "bold"),
+    panel.spacing.y = unit(1, "lines")
+  )
+```
+
+### Germany Uptake Rates
+
+For Germany I have information on solar, EV, retrofitting, smartphone, internet.
+
+EV only exists in 2015 and 2020. (note it is full EV or biodiesel, no hybrid category) Retrofitting is asked from 2010 - 2015, and 2019 Smartphone
+
+```{r DEU Uptake Rates, echo=FALSE}
+
+deu_props <- DEU %>%
+  group_by(syear, decile) %>%
+  summarise(
+    n_total = n(),
+    hybrid_prop = sum(hli0121 == 1 | hli0123 == 1 | hli0124 == 1 | 
+                     hli0114 == 1 | hli0115 == 1 | hli0116 == 1 | hli0117 == 1, 
+                     na.rm = TRUE) / n(),
+    solar_prop = sum(hgeqpsol == 1, na.rm = TRUE) / n(),
+    renovation_prop = sum(hgcondit == 2 | hgcondit == 3, na.rm = TRUE) /n(),
+    smartphone_prop = sum(hgeqptel == 1, na.rm = TRUE) / n(),
+    internet_new = sum(hlf0169_h == 1 , na.rm = TRUE) / n()
+  ) %>%
+  group_by(decile) %>%
+  arrange(syear) %>%
+  mutate(
+    internet_prop = pmin(cumsum(internet_new), 1),
+    smartphone_prop = if_else(syear > 2015, 1, smartphone_prop)
+  ) %>%
+  mutate(
+    hybrid_percent = hybrid_prop * 100,
+    solar_percent = solar_prop * 100, 
+    renovation_percent = renovation_prop * 100, 
+    smartphone_percent = smartphone_prop * 100,
+    internet_percent = internet_prop * 100
+  )
+
+
+deu_props_long <- deu_props %>%
+  dplyr::select(syear, hybrid_percent, solar_percent, renovation_percent, smartphone_percent, internet_percent) %>%  
+  pivot_longer(
+    cols = c(hybrid_percent, solar_percent, renovation_percent, smartphone_percent, internet_percent),
+    names_to = "technology",
+    values_to = "percentage"
+  ) %>%
+  mutate(technology = factor(technology, 
+    levels = c("hybrid_percent", "solar_percent", "renovation_percent", "smartphone_percent", "internet_percent"),
+    labels = c("Hybrid/EV", "Solar Panels", "Home Renovations", "Owns a Smartphone", "Internet access")))
+
+ggplot(deu_props_long, aes(x = decile, y = percentage, color = technology)) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~syear) +
+  theme_minimal() +
+  labs(
+    title = "Technology Adoption by Income Decile in Germany",
+    x = "Income Decile",
+    y = "Percentage of Households (%)",
+    color = "Technology"
+  ) +
+  scale_x_continuous(breaks = 1:10) +
+  theme(legend.position = "bottom")
+
+ggplot(deu_props_long[deu_props_long$percentage != 0, ], aes(x = syear, y = percentage, color = technology)) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~decile) +
+  theme_minimal() +
+  labs(
+    title = "Technology Adoption Over Time by Income Decile Germany",
+    x = "Year",
+    y = "Percentage of Households (%)",
+    color = "Technology"
+  ) +
+  theme(
+    legend.position = "bottom",
+    legend.box = "vertical",
+    panel.grid.minor = element_blank()
+  ) +
+  guides(color = guide_legend(nrow = 2))
+
+```
+
+### Combined Uptake Rates
+Not all technologies in each country have the same year of start and end data. I now get data as close to 2015 start and 2021 end as possible. Look at year ranges available for uptake rates for each country and technology at decile level. 
+
+```{r combined uptake rates, echo=FALSE}
+
+# Calculate uptake rates for US
+us_uptake_rates <- map_df(unique(us_props_long$technology), function(tech) {
+  us_props_long %>%
+    filter(
+      technology == tech,
+      year %in% c(2015, 2021)
+    ) %>%
+    dplyr::select(year, decile, technology, percentage) %>%
+    pivot_wider(
+      names_from = year,
+      values_from = percentage
+    ) %>%
+    mutate(
+      start_year = 2015,
+      uptake_rate = !!sym(as.character(2021)) - !!sym(as.character(2015)),
+      country = "US"
+    )
+})
+
+# Calculate uptake rates for UK
+uk_uptake_rates <- map_df(unique(uk_props_long$technology), function(tech) {
+  # Set start year based on technology
+  start_year <- if(tech == "Solar Panels") {
+    2012
+  } else {
+    2015
+  }
+  
+  # Set end year based on technology
+  end_year <- if(tech == "Digital Skills") {
+    2019
+  } else {
+    2021
+  }
+  
+  uk_props_long %>%
+    filter(
+      technology == tech,
+      year %in% c(start_year, end_year)
+    ) %>%
+    dplyr::select(year, decile, technology, percentage) %>%
+    pivot_wider(
+      names_from = year,
+      values_from = percentage
+    ) %>%
+    mutate(
+      start_year = start_year,
+      end_year = end_year,
+      uptake_rate = !!sym(as.character(end_year)) - !!sym(as.character(start_year)),
+      country = "UK"
+    )
+})
+
+# Calculate uptake rates for Germany
+deu_uptake_rates <- map_df(unique(deu_props_long$technology), function(tech) {
+  # Set start year based on technology
+  start_year <- if(tech == "Hybrid/EV") {
+    2015
+  } else {
+    find_first_year(deu_props_long %>% rename(year = syear), tech, "year")
+  }
+  
+  # Set end year based on technology
+  end_year <- case_when(
+    tech == "Home Renovation" ~ 2019,
+    tech == "Hybrid/EV" ~ 2020,
+    TRUE ~ 2021
+  )
+  
+  deu_props_long %>%
+    filter(
+      technology == tech,
+      syear %in% c(start_year, end_year)
+    ) %>%
+    dplyr::select(syear, decile, technology, percentage) %>%
+    pivot_wider(
+      names_from = syear,
+      values_from = percentage
+    ) %>%
+    mutate(
+      start_year = start_year,
+      end_year = end_year,
+      uptake_rate = !!sym(as.character(end_year)) - !!sym(as.character(start_year)),
+      country = "Germany"
+    )
+})
+# Combine all datasets
+all_uptake_rates <- bind_rows(us_uptake_rates, uk_uptake_rates, deu_uptake_rates)
+
+# Print summary of start years used
+print("Start years used for each technology by country:")
+all_uptake_rates %>%
+  distinct(country, technology, start_year) %>%
+  arrange(country, technology) %>%
+  print(n = Inf)
+
+# Create heatmap
+heatmap_all <- ggplot(all_uptake_rates, 
+  aes(x = factor(decile), 
+      y = paste0(technology, " (", start_year, "-", ifelse(country == "Germany" & technology == "Home Renovation", "2019", "2021"), ")"), 
+      fill = uptake_rate)) +
+  geom_tile() +
+  scale_fill_gradient2(
+    low = "red",
+    mid = "white",
+    high = "darkgreen",
+    midpoint = 0,
+    limits = c(-5, 5),
+    oob = scales::squish
+  ) +
+  theme_minimal() +
+  facet_wrap(~country) +
+  labs(
+    title = "Technology Uptake Rates by Income Decile",
+    subtitle = "Percentage Point Change in Adoption (Capped at ±5 percentage points)",
+    x = "Income Decile",
+    y = NULL,
+    fill = "Percentage\nPoint Change"
+  ) +
+  theme(
+    panel.grid = element_blank(),
+    axis.text = element_text(size = 10),
+    axis.text.y = element_text(hjust = 1),
+    legend.position = "right"
+  )
+
+# Create boxplot
+boxplot_all <- ggplot(all_uptake_rates, 
+  aes(y = paste0(technology, " (", start_year, "-", ifelse(country == "Germany" & technology == "Home Renovations", "2019", "2021"), ")"), 
+      fill = country)) +
+  geom_vline(xintercept = 0, color = "grey80", linetype = "dashed") +
+  geom_boxplot(aes(x = uptake_rate), width = 0.7, alpha = 0.7, position = position_dodge(width = 0.8)) +
+  scale_fill_brewer(palette = "Set2") +
+  theme_minimal() +
+  labs(
+    title = "Technology Uptake Distribution by Type and Country",
+    subtitle = "Boxplots show distribution across income deciles",
+    x = "Percentage Point Change",
+    y = NULL,
+    fill = "Country"
+  ) +
+  theme(
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_blank(),
+    legend.position = "bottom"
+  )
+
+# Display plots
+heatmap_all
+boxplot_all
+```
+
+There are two outlier technologies for uptake rates. The first is Sustainable Transit in the UK. UK commute (sustainable transport) only shows commuting patterns for those who work, so potentially hides significant commuting preferences, particularly for those out of work or job seeking and is being compared against COVID so less people were commuting to work in 2021, no matter their method. The second is home renovations in Germany. If i cange the year to later, the figure does go up, but 2010 shows a renovation boom that is lost in later years.
+
+For fun, I'm also looking at US state variation, but this is for PhD, please ignore in meeting.
+
+```{r US Regional Adoption, include=FALSE}
+# Calculate state adoption rates
+state_adoption <- US %>%
+  group_by(year, hh_state) %>%
+  summarise(
+    n_total = n(),
+    smartphone_prop = mean(smartphone == 1, na.rm = TRUE),
+    hybrid_prop = mean(hybrid == 1, na.rm = TRUE),
+    solar_prop = mean(heat_method == 6, na.rm = TRUE),
+    internet_prop = mean(computer == 1, na.rm = TRUE),
+    repairs_prop = mean(hh_repair > 1, na.rm = TRUE),
+    skills_prop = mean(internet == 1, na.rm = TRUE),
+    fuel_switch_prop = mean(switched_to_electric | switched_to_solar, na.rm = TRUE)
+  ) %>%
+  mutate(
+    smartphone_percent = smartphone_prop * 100,
+    hybrid_percent = hybrid_prop * 100,
+    solar_percent = solar_prop * 100,
+    internet_percent = internet_prop * 100,
+    repairs_percent = repairs_prop * 100,
+    skills_percent = skills_prop * 100,
+    fuel_switch_percent = fuel_switch_prop * 100
+  )
+
+# Convert to long format
+state_adoption_long <- state_adoption %>%
+  pivot_longer(
+    cols = ends_with("percent"),
+    names_to = "technology",
+    values_to = "percentage"
+  ) %>%
+  mutate(technology = factor(technology,
+    levels = c("smartphone_percent", "hybrid_percent", "solar_percent",
+               "internet_percent", "repairs_percent", "skills_percent",
+               "fuel_switch_percent"),
+    labels = c("Smartphone", "Hybrid/EV", "Solar Panels",
+               "Internet", "Home Repairs", "Digital Skills",
+               "Clean Heating Switch")
+  ))
+
+# Calculate state growth (2015-2020)
+state_growth <- state_adoption_long %>%
+  filter(year %in% c(2015, 2021)) %>%
+  select(year, hh_state, technology, percentage) %>%
+  pivot_wider(
+    names_from = year,
+    values_from = percentage,
+    names_prefix = "year_"
+  ) %>%
+  mutate(
+    growth_rate = pmax(year_2021 - year_2015, 0)
+  )
+
+# Create heatmap of state growth (top 20 states by average growth)
+top_states <- state_growth %>%
+  group_by(hh_state) %>%
+  summarise(mean_growth = mean(growth_rate, na.rm = TRUE)) %>%
+  arrange(desc(mean_growth)) %>%
+  head(20) %>%
+  pull(hh_state)
+
+ggplot(state_growth %>% filter(hh_state %in% top_states),
+       aes(y = reorder(hh_state, growth_rate), x = technology, fill = growth_rate)) +
+  geom_tile() +
+  scale_fill_gradient(low = "white", high = "darkgreen") +
+  theme_minimal() +
+  labs(
+    title = "Technology Adoption Growth by State (2015-2020)",
+    subtitle = "Top 20 states by average growth rate across technologies",
+    x = "Technology",
+    y = "State",
+    fill = "Growth Rate (%)"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid = element_blank()
+  )
+
+# Create boxplot of state distributions by technology
+ggplot(state_growth, aes(y = reorder(technology, growth_rate, FUN = median))) +
+  geom_boxplot(aes(x = growth_rate), fill = "lightgreen", alpha = 0.5) +
+  geom_jitter(aes(x = growth_rate), height = 0.2, alpha = 0.4) +
+  theme_minimal() +
+  labs(
+    title = "Distribution of Technology Adoption Growth Across States (2015-2020)",
+    subtitle = "Each point represents a state",
+    x = "Percentage Point Growth",
+    y = NULL
+  )
+
+# Calculate summary statistics for each state
+state_summary <- state_growth %>%
+  group_by(hh_state) %>%
+  summarise(
+    mean_growth = mean(growth_rate, na.rm = TRUE),
+    max_growth = max(growth_rate, na.rm = TRUE),
+    top_technology = technology[which.max(growth_rate)],
+    n_technologies = sum(growth_rate > 0, na.rm = TRUE)
+  ) %>%
+  arrange(desc(mean_growth))
+
+print("Top 10 States by Average Growth Rate:")
+print(head(state_summary, 10))
+
+```
+
+## Step 2: Baseline Model
+
+In the baseline model I assume no targeted policy to change distribution (i.e. 3% for 10th decile vs 15% for 1st in 2020 with a constant growth projection to 2050). Model aims to reach exogenously government provided diffusion target for each technology (e.g.40% for housing retrofit vs 60% for EVs). 
+
+### U.S. Baseline
+
+```{r US Baseline, echo=FALSE}
+# Convert data frame to tibble
+us_props <- as_tibble(us_props)
+
+# Function to fit and forecast technology diffusion
+forecast_diffusion <- function(data, tech_col, max_adoption = 100, forecast_year = 2050) {
+  # Create model data
+  model_data <- tibble(
+    year = data$year,
+    adoption = data[[tech_col]]
+  ) %>%
+    arrange(year) %>%
+    filter(!is.na(adoption))
+  
+  # Fit logistic curve
+  tryCatch({
+    # Set control parameters differently
+    model <- drm(adoption ~ year, 
+                 data = model_data,
+                 fct = L.4(), # 4-parameter logistic function
+                 control = list(maxiter = 500, stepsize = 0.1))
+    
+    # Generate future years
+    future_years <- seq(min(model_data$year), forecast_year, by = 1)
+    
+    # Make predictions
+    predictions <- tibble(
+      year = future_years,
+      predicted_adoption = predict(model, data.frame(year = future_years))
+    )
+    
+    # Try to add confidence intervals
+    tryCatch({
+      ci <- predict(model, data.frame(year = future_years), interval = "confidence")
+      predictions$lower_ci <- ci[,2]
+      predictions$upper_ci <- ci[,3]
+    }, error = function(e) NULL)
+    
+    list(
+      predictions = predictions,
+      model = model,
+      parameters = coef(model),
+      data = model_data
+    )
+  }, error = function(e) {
+    # Try alternative fitting method if first attempt fails
+    tryCatch({
+      # Try simpler 3-parameter logistic
+      model <- drm(adoption ~ year, 
+                   data = model_data,
+                   fct = L.3())
+      
+      future_years <- seq(min(model_data$year), forecast_year, by = 1)
+      predictions <- tibble(
+        year = future_years,
+        predicted_adoption = predict(model, data.frame(year = future_years))
+      )
+      
+      list(
+        predictions = predictions,
+        model = model,
+        parameters = coef(model),
+        data = model_data
+      )
+    }, error = function(e2) {
+      cat("Error fitting model for", tech_col, ":", e2$message, "\n")
+      NULL
+    })
+  })
+}
+
+# Function to plot diffusion curves
+plot_diffusion <- function(original_data, forecast_results, tech_col) {
+  # Create base plot
+  p <- ggplot() +
+    # Historical data
+    geom_point(data = forecast_results$data,
+               aes(x = year, y = adoption),
+               color = "blue", size = 3, alpha = 0.6) +
+    # Forecast line
+    geom_line(data = forecast_results$predictions,
+              aes(x = year, y = predicted_adoption),
+              color = "red", size = 1)
+  
+  # Add confidence intervals if available
+  if ("lower_ci" %in% names(forecast_results$predictions)) {
+    p <- p + geom_ribbon(data = forecast_results$predictions,
+                        aes(x = year, 
+                            ymin = lower_ci,
+                            ymax = upper_ci),
+                        alpha = 0.2, fill = "red")
+  }
+  
+  # Add styling
+  p + theme_minimal() +
+    labs(
+      title = paste("Technology Diffusion Forecast:", 
+                   gsub("_percent", "", tech_col)),
+      subtitle = "Historical data and logistic growth projection to 2050",
+      x = "Year",
+      y = "Adoption Rate (%)"
+    ) +
+    scale_x_continuous(breaks = seq(min(original_data$year), 2050, by = 5)) +
+    ylim(0, 100) +  # Set y-axis limits to 0-100%
+    theme(
+      panel.grid.minor = element_blank(),
+      legend.position = "bottom"
+    )
+}
+
+# Define technologies
+technologies <- c("smartphone_percent", "hybrid_percent", "solar_percent", 
+                 "internet_percent", "repairs_percent", "skills_percent",
+                 "fuel_switch_percent")
+
+# Create list for results
+forecasts <- list()
+
+# Fit models and create plots
+for(tech in technologies) {
+  cat("\nProcessing", tech, "...\n")
+  forecasts[[tech]] <- forecast_diffusion(us_props, tech)
+  
+  if(!is.null(forecasts[[tech]])) {
+    plot <- plot_diffusion(us_props, forecasts[[tech]], tech)
+    print(plot)
+    
+    # Print some model diagnostics
+    cat("Fitted successfully. Final adoption rate prediction for 2050:", 
+        round(tail(forecasts[[tech]]$predictions$predicted_adoption, 1), 1), 
+        "%\n")
+  } else {
+    cat("Failed to create forecast for", tech, "\n")
+  }
+}
+
+# Get forecast metrics
+forecast_metrics <- map_df(names(forecasts), function(tech) {
+  if(!is.null(forecasts[[tech]])) {
+    pred <- forecasts[[tech]]$predictions
+    
+    tibble(
+      technology = gsub("_percent", "", tech),
+      adoption_2030 = round(pred$predicted_adoption[pred$year == 2030], 1),
+      adoption_2040 = round(pred$predicted_adoption[pred$year == 2040], 1),
+      adoption_2050 = round(pred$predicted_adoption[pred$year == 2050], 1)
+    )
+  }
+})
+
+# Print summary
+cat("\nForecast Adoption Rates:\n")
+print(forecast_metrics %>% arrange(desc(adoption_2050)))
+```
+
+```{r US diffusion by decile, echo=TRUE}
+# Load required packages
+library(tidyverse)
+library(nls2)
+
+# Function to fit logistic growth model for a specific decile
+forecast_logistic_growth <- function(data, tech_col, decile_val, forecast_year = 2050) {
+  # Create model data for specific decile
+  model_data <- tibble(
+    year = data$year[data$decile == decile_val],
+    adoption = data[[tech_col]][data$decile == decile_val]
+  ) %>%
+    arrange(year) %>%
+    filter(!is.na(adoption))
+  
+  # Normalize years to start from 0 for better model fitting
+  model_data$t <- model_data$year - min(model_data$year)
+  
+  # Get initial parameter estimates
+  K_guess <- max(100, max(model_data$adoption) * 1.2)  # Carrying capacity
+  r_guess <- 0.5  # Growth rate
+  N0_guess <- model_data$adoption[1]  # Initial adoption
+  
+  tryCatch({
+    # Fit logistic growth model using nls
+    # Formula: N(t) = K / (1 + ((K - N0)/N0) * exp(-r*t))
+    model <- nls(adoption ~ K / (1 + ((K - N0)/N0) * exp(-r * t)),
+                 data = model_data,
+                 start = list(K = K_guess, r = r_guess, N0 = N0_guess),
+                 control = nls.control(maxiter = 1000))
+    
+    # Generate future years for prediction
+    future_years <- seq(min(model_data$year), forecast_year, by = 1)
+    future_t <- future_years - min(model_data$year)
+    
+    # Extract parameters
+    params <- coef(model)
+    K <- params["K"]
+    r <- params["r"]
+    N0 <- params["N0"]
+    
+    # Generate predictions
+    predictions <- tibble(
+      year = future_years,
+      t = future_t,
+      predicted_adoption = K / (1 + ((K - N0)/N0) * exp(-r * t)),
+      decile = decile_val
+    )
+    
+    list(
+      predictions = predictions,
+      model = model,
+      parameters = params,
+      data = model_data,
+      K = K,
+      r = r,
+      N0 = N0
+    )
+  }, error = function(e) {
+    cat("Error fitting model for decile", decile_val, ":", e$message, "\n")
+    NULL
+  })
+}
+
+# Function to plot growth curves by decile
+plot_logistic_growth <- function(forecasts_list, tech_col) {
+  # Combine all predictions
+  all_predictions <- bind_rows(
+    lapply(forecasts_list, function(x) x$predictions)
+  )
+  
+  # Combine all historical data
+  all_data <- bind_rows(
+    lapply(forecasts_list, function(x) {
+      x$data %>% mutate(decile = x$predictions$decile[1])
+    })
+  )
+  
+  # Create plot
+  ggplot() +
+    # Historical data points
+    geom_point(data = all_data,
+               aes(x = year, y = adoption, color = factor(decile)),
+               alpha = 0.6, size = 2) +
+    # Forecast lines
+    geom_line(data = all_predictions,
+              aes(x = year, y = predicted_adoption, color = factor(decile))) +
+    scale_color_viridis_d(name = "Income Decile") +
+    theme_minimal() +
+    labs(
+      title = paste("Logistic Growth Forecast by Income Decile:", 
+                   gsub("_percent", "", tech_col)),
+      subtitle = "Historical data and logistic growth projections to 2050",
+      x = "Year",
+      y = "Adoption Rate (%)"
+    ) +
+    scale_x_continuous(breaks = seq(2010, 2050, by = 5)) +
+    ylim(0, 100) +
+    theme(
+      panel.grid.minor = element_blank(),
+      legend.position = "right"
+    )
+}
+
+# Define technologies
+technologies <- c("smartphone_percent", "hybrid_percent", "solar_percent", 
+                 "internet_percent", "repairs_percent", "skills_percent",
+                 "fuel_switch_percent")
+
+# Create nested list for results
+forecasts_by_decile <- list()
+
+# Fit models for each technology and decile
+for(tech in technologies) {
+  cat("\nProcessing", tech, "\n")
+  
+  # Store forecasts for each decile
+  decile_forecasts <- list()
+  
+  for(d in 1:10) {
+    cat("  Decile", d, "\n")
+    decile_forecasts[[d]] <- forecast_logistic_growth(us_props, tech, d)
+  }
+  
+  # Store and plot if we have successful fits
+  if(any(!sapply(decile_forecasts, is.null))) {
+    forecasts_by_decile[[tech]] <- decile_forecasts
+    
+    # Create and print plot
+    plot <- plot_logistic_growth(decile_forecasts[!sapply(decile_forecasts, is.null)], tech)
+    print(plot)
+    
+    # Print model parameters and predictions
+    cat("\nLogistic Growth Parameters for", gsub("_percent", "", tech), ":\n")
+    parameter_summary <- bind_rows(lapply(decile_forecasts[!sapply(decile_forecasts, is.null)], function(x) {
+      tibble(
+        decile = x$predictions$decile[1],
+        carrying_capacity = round(x$K, 1),
+        growth_rate = round(x$r, 3),
+        initial_adoption = round(x$N0, 1),
+        adoption_2030 = round(x$predictions$predicted_adoption[x$predictions$year == 2030], 1),
+        adoption_2040 = round(x$predictions$predicted_adoption[x$predictions$year == 2040], 1),
+        adoption_2050 = round(x$predictions$predicted_adoption[x$predictions$year == 2050], 1)
+      )
+    }))
+    print(parameter_summary %>% arrange(decile))
+  }
+}
+
+```
+
+```{r energy data, echo=TRUE}
+# Create historical price dataset (EIA Average Retail Electricity and Gas 2005 - 2022)
+historical_prices <- tibble(
+  year = 2005:2022,
+  elec_price = c(9.45, 10.40, 10.65, 11.26, 11.51, 11.54, 11.72, 11.88, 12.13,
+                 12.52, 12.65, 12.55, 12.89, 12.87, 13.01, 13.15, 13.72, 14.77),  # cents per kWh
+  gas_price = c(13.83, 13.73, 13.08, 13.89, 12.14, 11.39, 11.03, 10.71, 10.32,
+                10.97, 10.38, 10.05, 10.91, 10.50, 10.44, 10.78, 11.47, 15.95)   # dollars per thousand cubic feet
+)
+
+# Merge with US dataset
+US <- US %>%
+  left_join(historical_prices, by = "year")
+
+# Print summary of the new columns
+cat("Summary of added energy price columns:\n")
+summary(US[c("elec_price", "gas_price")])
+
+# Create quick visualization of price trends
+ggplot(historical_prices, aes(x = year)) +
+  geom_line(aes(y = elec_price, color = "Electricity"), size = 1) +
+  geom_line(aes(y = gas_price, color = "Natural Gas"), size = 1) +
+  theme_minimal() +
+  labs(
+    title = "Historical Energy Prices (2005-2022)",
+    y = "Price",
+    color = "Energy Type"
+  ) +
+  scale_color_manual(values = c("Electricity" = "blue", "Natural Gas" = "red")) +
+  theme(legend.position = "bottom") +
+  annotate("text", x = max(historical_prices$year), y = max(historical_prices$elec_price),
+           label = "cents per kWh", hjust = 1, vjust = -0.5) +
+  annotate("text", x = max(historical_prices$year), y = max(historical_prices$gas_price),
+           label = "dollars per thousand cubic feet", hjust = 1, vjust = -0.5)
+```
+
+```{r US consumption, echo=TRUE}
+# Calculate energy consumption
+US <- US %>%
+  mutate(
+    # Convert electricity expenditure to kWh
+    # elec_price is in cents per kWh, so multiply by 100 to convert to dollars
+    elec_consumption_kwh = (elec_a_exp / (elec_price/100)),
+    
+    # Convert gas expenditure to thousand cubic feet
+    gas_consumption_tcf = gas_a_exp / gas_price,
+    
+    # Calculate consumption per room (to account for house size)
+    elec_consumption_per_room = elec_consumption_kwh / hh_rooms,
+    gas_consumption_per_room = gas_consumption_tcf / hh_rooms
+  )
+
+# Create summary statistics
+consumption_summary <- US %>%
+  group_by(year) %>%
+  summarise(
+    avg_elec_kwh = mean(elec_consumption_kwh, na.rm = TRUE),
+    median_elec_kwh = median(elec_consumption_kwh, na.rm = TRUE),
+    avg_gas_tcf = mean(gas_consumption_tcf, na.rm = TRUE),
+    median_gas_tcf = median(gas_consumption_tcf, na.rm = TRUE),
+    avg_elec_per_room = mean(elec_consumption_per_room, na.rm = TRUE),
+    avg_gas_per_room = mean(gas_consumption_per_room, na.rm = TRUE)
+  )
+
+# Print summary statistics
+print("Average Annual Energy Consumption:")
+print(consumption_summary)
+
+# Create visualization of consumption trends
+ggplot(consumption_summary, aes(x = year)) +
+  geom_line(aes(y = avg_elec_kwh, color = "Electricity (kWh)"), size = 1) +
+  geom_line(aes(y = avg_gas_tcf * 1000, color = "Gas (cf)"), size = 1) +  # Multiply by 1000 to convert to cubic feet
+  theme_minimal() +
+  labs(
+    title = "Average Household Energy Consumption Over Time",
+    y = "Consumption",
+    color = "Energy Type"
+  ) +
+  scale_color_manual(values = c("Electricity (kWh)" = "blue", "Gas (cf)" = "red")) +
+  theme(legend.position = "bottom")
+
+# Create boxplot of consumption by house size
+ggplot(US, aes(x = factor(hh_rooms), y = elec_consumption_kwh)) +
+  geom_boxplot(alpha = 0.5) +
+  theme_minimal() +
+  labs(
+    title = "Electricity Consumption by Number of Rooms",
+    x = "Number of Rooms",
+    y = "Annual Electricity Consumption (kWh)"
+  ) +
+  theme(legend.position = "none")
+
+# Basic sanity checks (print ranges to check for unreasonable values)
+cat("\nConsumption Ranges (removing outliers):\n")
+consumption_ranges <- US %>%
+  summarise(
+    elec_kwh_min = quantile(elec_consumption_kwh, 0.05, na.rm = TRUE),
+    elec_kwh_max = quantile(elec_consumption_kwh, 0.95, na.rm = TRUE),
+    gas_tcf_min = quantile(gas_consumption_tcf, 0.05, na.rm = TRUE),
+    gas_tcf_max = quantile(gas_consumption_tcf, 0.95, na.rm = TRUE)
+  )
+print(consumption_ranges)
+
+```
+
+```{r US uptake consumption, echo=TRUE}
+
+# First, generate forecasts for each technology and decile
+forecast_logistic_growth <- function(data, tech_col, decile_val, forecast_year = 2050) {
+  # Create model data for specific decile
+  model_data <- tibble(
+    year = data$year[data$decile == decile_val],
+    adoption = data[[tech_col]][data$decile == decile_val]
+  ) %>%
+    arrange(year) %>%
+    filter(!is.na(adoption))
+  
+  # Normalize years to start from 0 for better model fitting
+  model_data$t <- model_data$year - min(model_data$year)
+  
+  tryCatch({
+    # Get initial parameter estimates
+    K_guess <- max(100, max(model_data$adoption) * 1.2)  # Carrying capacity
+    r_guess <- 0.5  # Growth rate
+    N0_guess <- model_data$adoption[1]  # Initial adoption
+    
+    # Fit logistic growth model using nls
+    model <- nls(adoption ~ K / (1 + ((K - N0)/N0) * exp(-r * t)),
+                 data = model_data,
+                 start = list(K = K_guess, r = r_guess, N0 = N0_guess),
+                 control = nls.control(maxiter = 1000))
+    
+    # Generate future years for prediction
+    future_years <- seq(min(model_data$year), forecast_year, by = 1)
+    future_t <- future_years - min(model_data$year)
+    
+    # Extract parameters
+    params <- coef(model)
+    K <- params["K"]
+    r <- params["r"]
+    N0 <- params["N0"]
+    
+    # Generate predictions
+    predictions <- tibble(
+      year = future_years,
+      t = future_t,
+      predicted_adoption = K / (1 + ((K - N0)/N0) * exp(-r * t)),
+      decile = decile_val
+    )
+    
+    return(list(
+      predictions = predictions,
+      model = model,
+      parameters = params,
+      data = model_data,
+      K = K,
+      r = r,
+      N0 = N0
+    ))
+  }, error = function(e) {
+    cat("Error fitting model for decile", decile_val, ":", e$message, "\n")
+    return(NULL)
+  })
+}
+
+# Generate forecasts
+technologies <- c("hybrid_prop", "solar_prop", "fuel_switch_prop")
+forecasts_by_decile <- list()
+
+for(tech in technologies) {
+  cat("\nGenerating forecasts for", tech, "\n")
+  tech_forecasts <- list()
+  
+  for(d in 1:10) {
+    cat("  Processing decile", d, "\n")
+    tech_forecasts[[d]] <- forecast_logistic_growth(us_props, tech, d)
+  }
+  
+  forecasts_by_decile[[tech]] <- tech_forecasts
+}
+
+# Now calculate energy impacts
+# Get current adoption rates
+max_year <- max(us_props$year)
+current_rates <- data.frame(
+  decile = us_props$decile[us_props$year == max_year],
+  current_hybrid = us_props$hybrid_prop[us_props$year == max_year],
+  current_solar = us_props$solar_prop[us_props$year == max_year],
+  current_fuel_switch = us_props$fuel_switch_prop[us_props$year == max_year]
+)
+
+# Calculate baseline consumption
+baseline_consumption <- US %>%
+  group_by(decile) %>%
+  summarise(
+    avg_energy_with_hybrid = mean(elec_consumption_kwh[hybrid == 1], na.rm = TRUE),
+    avg_energy_no_hybrid = mean(elec_consumption_kwh[hybrid == 0], na.rm = TRUE),
+    hybrid_impact = avg_energy_with_hybrid - avg_energy_no_hybrid,
+    
+    avg_energy_with_solar = mean(elec_consumption_kwh[heat_method == 6], na.rm = TRUE),
+    avg_energy_no_solar = mean(elec_consumption_kwh[heat_method != 6], na.rm = TRUE),
+    solar_impact = avg_energy_with_solar - avg_energy_no_solar,
+    
+    avg_energy_with_elec_heat = mean(elec_consumption_kwh[heat_method == 2], na.rm = TRUE),
+    avg_energy_no_elec_heat = mean(elec_consumption_kwh[heat_method != 2], na.rm = TRUE),
+    elec_heat_impact = avg_energy_with_elec_heat - avg_energy_no_elec_heat
+  )
+
+# Function to calculate energy impact
+calculate_energy_impact <- function(current_adoption, future_adoption, energy_impact, households = 1000) {
+  additional_adopters = (future_adoption - current_adoption) * households / 100
+  total_impact = additional_adopters * energy_impact
+  return(total_impact)
+}
+
+# Calculate impacts
+tech_impacts <- list()
+impact_counter <- 0
+
+for(tech in technologies) {
+  cat("\nProcessing impacts for", tech, "\n")
+  
+  for(d in 1:10) {
+    cat("  Processing decile", d, "\n")
+    
+    if(!is.null(forecasts_by_decile[[tech]][[d]])) {
+      forecast <- forecasts_by_decile[[tech]][[d]]
+      current <- current_rates[current_rates$decile == d, ]
+      baseline <- baseline_consumption[baseline_consumption$decile == d, ]
+      
+      impact_counter <- impact_counter + 1
+      tech_impacts[[impact_counter]] <- data.frame(
+        technology = gsub("_prop", "", tech),
+        decile = d,
+        additional_energy_2030 = calculate_energy_impact(
+          current[[paste0("current_", gsub("_prop", "", tech))]], 
+          forecast$predictions$predicted_adoption[forecast$predictions$year == 2030],
+          switch(tech,
+                "hybrid_prop" = baseline$hybrid_impact,
+                "solar_prop" = baseline$solar_impact,
+                "fuel_switch_prop" = baseline$elec_heat_impact)
+        ),
+        additional_energy_2040 = calculate_energy_impact(
+          current[[paste0("current_", gsub("_prop", "", tech))]], 
+          forecast$predictions$predicted_adoption[forecast$predictions$year == 2040],
+          switch(tech,
+                "hybrid_prop" = baseline$hybrid_impact,
+                "solar_prop" = baseline$solar_impact,
+                "fuel_switch_prop" = baseline$elec_heat_impact)
+        ),
+        additional_energy_2050 = calculate_energy_impact(
+          current[[paste0("current_", gsub("_prop", "", tech))]], 
+          forecast$predictions$predicted_adoption[forecast$predictions$year == 2050],
+          switch(tech,
+                "hybrid_prop" = baseline$hybrid_impact,
+                "solar_prop" = baseline$solar_impact,
+                "fuel_switch_prop" = baseline$elec_heat_impact)
+        )
+      )
+    }
+  }
+}
+
+# Combine results if we have any
+if(length(tech_impacts) > 0) {
+  tech_impacts_df <- do.call(rbind, tech_impacts)
+  
+  # Create visualization
+  ggplot(tech_impacts_df %>% 
+           pivot_longer(cols = starts_with("additional_energy"),
+                       names_to = "year",
+                       values_to = "energy_impact") %>%
+           mutate(year = as.numeric(gsub("additional_energy_", "", year))), 
+         aes(x = factor(decile), y = energy_impact, fill = technology)) +
+    geom_col(position = "dodge") +
+    facet_wrap(~year) +
+    theme_minimal() +
+    labs(
+      title = "Projected Additional Energy Demand from Technology Adoption",
+      subtitle = "By income decile and technology type",
+      x = "Income Decile",
+      y = "Additional Annual Energy Consumption (kWh)",
+      fill = "Technology"
+    ) +
+    theme(legend.position = "bottom")
+  
+  # Print summary statistics
+  cat("\nSummary of Additional Energy Demand (kWh):\n")
+  print(tech_impacts_df %>%
+          group_by(technology) %>%
+          summarise(
+            total_2030 = sum(additional_energy_2030, na.rm = TRUE),
+            total_2040 = sum(additional_energy_2040, na.rm = TRUE),
+            total_2050 = sum(additional_energy_2050, na.rm = TRUE)
+          ))
+}
+```

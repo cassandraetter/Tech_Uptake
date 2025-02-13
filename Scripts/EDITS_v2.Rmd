@@ -1,0 +1,2221 @@
+---
+title: "Edits Notebook"
+author: "Cassandra Etter"
+date: "2024-11-15"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This is the data behind the EDITS work. It follows four steps. For Step 1 I look at uptake rates between 2010 and 2021 in three countries: US, UK and Germany. For the US, I use the PSID which tracks households between 2011- 2021 on a biannual basis. For Germany, I use SOEP which tracks households between 2010- 2021 on an annual basis, and for the UK I use Understanding Society which tracks households between 2010 - 2021 on an annual basis. All data was downloaded in September 2024 and cleaning files are on github.
+
+8 technologies selected are :Internet Access, own a smartphone, Home has Solar, Home switched from Gas/Coal/Wood to electric (fuel switching), Home renovation/ retrofitting, EV/ Hybrid car, Commuting habit (walking, biking), digital skills/ capabilities (daily use of internet).
+
+Note: Significant limitations on technologies surveyed. With better data, I could also do this for smart-meters, air conditioners, etc.
+
+```{r libraries,include=FALSE}
+library(DiagrammeR)
+library(psidread)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(survey)
+library(priceR)
+library(readr)
+library(tidyverse)
+library(nls2)
+library(drc)
+library(forecast)
+library(nls2)
+library(quantmod)
+library(scales)
+```
+
+
+```{r load UK DEU, include=FALSE}
+
+UK <- read_csv("~/Documents/Github/PhD/Data/UK_Clean.csv")
+DEU <- read_csv("~/Documents/Github/PhD/Data/DEU_Clean.csv", show_col_types = FALSE)
+US <- read_csv("~/Documents/Github/PhD/Data/US_EDITS.csv", show_col_types = FALSE)
+
+```
+
+## Step 1: Uptake Rates
+
+This provides a snapshot for current uptake across the households assessing heterogeneity across income level.
+
+### U.S. Uptake Rates
+
+For the US, I have information for solar ownership, EV/ hybrid ownership, smartphone ownership, internet access, and commute habit. I create an additional variable on fuel switching by looking at heating method and seeing where moved from wood, oil, gas, coal to electric heating. I also create a variable for retrofitting based on home renovations and skills based on survey responses where RP responds they use the internet daily.
+
+Note: Smartphone ownership and digital skills questions were only added to the survey in 2015.
+
+```{r US Uptake Rates, echo=FALSE}
+US <- US %>%
+  group_by(pid) %>%
+  arrange(pid, year) %>%
+  mutate(
+    # Create a combined solar indicator
+    is_solar = heat_method == 6 | heat_method_2 == 6 | heat_method_3 == 6,
+    
+    # Track those who switched to electric
+    switched_to_electric = lag(heat_method) %in% c(1,3,4,5,10,11) & 
+                          heat_method == 2,
+    
+    # Track those always on electric
+    always_electric = all(heat_method == 2, na.rm = TRUE),
+    
+    # Track those who switched to solar (using any of the three methods)
+    switched_to_solar = lag(is_solar) == FALSE & is_solar == TRUE,
+    
+    # Track those always on solar
+    always_solar = all(is_solar, na.rm = TRUE),
+    
+    # Combined measures: either switched or always been on that method
+    using_electric = heat_method == 2,
+    using_solar = is_solar,
+    
+    # Switch years
+    switch_year_electric = case_when(
+      switched_to_electric ~ year,
+      TRUE ~ NA_real_
+    ),
+    switch_year_solar = case_when(
+      switched_to_solar ~ year,
+      TRUE ~ NA_real_
+    )
+  ) %>%
+  ungroup() %>%
+  filter(year > 2010)
+# For decile analysis:
+uptake_rates <- US %>%
+  group_by(year, decile) %>%
+  summarise(
+    total_households = n_distinct(pid),
+    
+    # Electric heating metrics
+    new_electric_switches = sum(switched_to_electric, na.rm = TRUE),
+    total_electric_users = sum(using_electric, na.rm = TRUE),
+    
+    # Solar heating metrics
+    new_solar_switches = sum(switched_to_solar, na.rm = TRUE),
+    total_solar_users = sum(using_solar, na.rm = TRUE),
+    
+    # Calculate rates
+    electric_switch_rate = (new_electric_switches / total_households) * 100,
+    total_electric_rate = (total_electric_users / total_households) * 100,
+    solar_switch_rate = (new_solar_switches / total_households) * 100,
+    total_solar_rate = (total_solar_users / total_households) * 100
+  ) %>%
+  ungroup()
+
+us_props <- US %>%
+  group_by(year, decile) %>%
+  summarise(
+    n_total = n(),
+    smartphone_prop = mean(smartphone == 1, na.rm = TRUE),
+    hybrid_prop = mean(hybrid == 1 | hybrid_2 == 1 | hybrid_3 == 1, na.rm = TRUE), # includes EVs 
+    solar_prop = mean(heat_method == 6 | heat_method_2 ==6 | heat_method_3 == 6, na.rm = TRUE),
+    internet_prop = mean(computer == 1, na.rm = TRUE),     # Computer ownership
+    repairs_prop = mean(hh_repair > 1, na.rm = TRUE), 
+    skills_prop = mean(internet == 1, na.rm = TRUE),       # Internet usage
+    fuel_switch_prop = mean(heat_method == 2 & 
+                           !(heat_method_2 %in% c(1,3,4,5,10,11) | 
+                             heat_method_3 %in% c(1,3,4,5,10,11)), na.rm = TRUE)
+  ) %>%
+  mutate(
+    smartphone_percent = smartphone_prop * 100,            # Remove duplicate line
+    hybrid_percent = hybrid_prop * 100,
+    solar_percent = solar_prop * 100, 
+    internet_percent = internet_prop * 100, 
+    repairs_percent = repairs_prop * 100, 
+    skills_percent = skills_prop * 100,
+    fuel_switch_percent = fuel_switch_prop * 100 
+  )
+
+
+us_props_long <- us_props %>%
+  dplyr::select(year, decile, smartphone_percent, hybrid_percent, solar_percent, 
+         internet_percent, repairs_percent, skills_percent, 
+         fuel_switch_percent) %>%
+  pivot_longer(
+    cols = c(smartphone_percent, hybrid_percent, solar_percent, 
+             internet_percent, repairs_percent, skills_percent, 
+             fuel_switch_percent),
+    names_to = "technology",
+    values_to = "percentage"
+  ) %>%
+  mutate(technology = factor(technology, 
+    levels = c("smartphone_percent", "hybrid_percent", "solar_percent", 
+               "internet_percent", "repairs_percent", "skills_percent", 
+               "fuel_switch_percent"),
+    labels = c("Smartphone", "Hybrid/EV", "Solar Panels", "Internet", 
+               "Home Renovations", "Digital Skills", "Clean Heating Switch")))
+# Create the plot
+ggplot(us_props_long, aes(x = decile, y = percentage, color = technology)) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~year) +
+  theme_minimal() +
+  labs(
+    title = "Technology Adoption by Income Decile in US",
+    x = "Income Decile",
+    y = "Percentage of Households (%)",
+    color = "Technology"
+  ) +
+  scale_x_continuous(breaks = 1:10) +
+  theme(
+    legend.position = "bottom",
+    legend.box = "vertical",
+    panel.grid.minor = element_blank()
+  ) +
+  guides(color = guide_legend(nrow = 2)) # Makes legend more compact
+
+# Plot across time
+ggplot(us_props_long, aes(x = year, y = percentage, color = technology)) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~decile) +
+  theme_minimal() +
+  labs(
+    title = "Technology Adoption Over Time by Income Decile",
+    x = "Year",
+    y = "Percentage of Households (%)",
+    color = "Technology"
+  ) +
+  theme(
+    legend.position = "bottom",
+    legend.box = "vertical",
+    panel.grid.minor = element_blank()
+  ) +
+  guides(color = guide_legend(nrow = 2))
+```
+
+Clean heating is interesting in that high income households had less electric only and marginally increased over 2011 - 2021 time period, though they still did increase within decile 9 and 10. Solar panel infiltration is lower than national average at 1% with EIA estimating 4%.
+
+### U.K. Uptake Rates
+
+For the UK, I have solar, EV/ hybrid, smartphone, internet, commute and skills. I create fuel switching in the same manner as for US, buy looking at home energy bills and looking for those households that switch from gas/coal to electric only.
+
+Solar question is only asked in 2009, 2012, 2018, and 2021. EV is asked in 2012, 2015, 2018, and 2021. Smartphone begins in 2013. Skills starts in 2011.
+
+```{r UK Uptake Rates, echo=FALSE}
+# UK proportions
+uk_props <- UK %>%
+  group_by(year, weighted_decile) %>%
+  summarise(
+    n_total = n(),
+    solar_prop = mean(solar1 %in% c("yes - fitted", "Yes - fitted"), na.rm = TRUE),
+    ev_prop = mean(carfuel1 %in% c("Electric / battery", "electric / battery", "Hybrid (petrol/electric)", "hybrid (petrol/electric)"), na.rm = TRUE),
+    smartphone_prop = mean(smartmob %in% c("Yes", "yes"), na.rm = TRUE ),
+    skills_prop = mean(netpuse %in% c("Every day", "every day") | netpusenew %in% c("Every day", "every day"), na.rm = TRUE),
+    internet_prop = mean(pcnet %in% c("yes", "Yes"), na.rm = TRUE),
+    commute_prop = mean(wktrvfar %in% c( "Cycle", "Bus/coach", "Walk", "Train", "Underground/Metro/Tram/Light railway", "underground/metro/tram/light railway", "Motorcycle/moped/scooter") | worktrav %in% c("Underground/Metro/Tram/Light railway", "Train", "cycle", "Walk", "underground/metro/tram/light railway (if england/scotland/wales)", "bus/coach", "Bus/coach", "train", "underground/metro/tram/light railway", "underground/metro/tram/light railway {if region = gb}", "Motorcycle/moped/scooter") , na.rm = TRUE),
+    fuel_switch_prop = mean(gaspay == "inapplicable" & duelpay == "inapplicable", na.rm = TRUE)
+  ) %>%
+  mutate(
+    solar_percent = solar_prop * 100,
+    ev_percent = ev_prop * 100,
+    smartphone_percent = smartphone_prop * 100, 
+    internet_percent = internet_prop * 100, 
+    commute_percent = commute_prop * 100,
+    skills_percent = skills_prop * 100, 
+    fuel_switch_percent = fuel_switch_prop * 100
+  )
+
+# Convert to long format with all technologies
+uk_props_long <- uk_props %>%
+  dplyr::select(year, weighted_decile, solar_percent, ev_percent, smartphone_percent, 
+         internet_percent, skills_percent, commute_percent, fuel_switch_percent) %>%
+  pivot_longer(
+    cols = c(solar_percent, ev_percent, smartphone_percent, 
+             internet_percent, skills_percent, commute_percent, fuel_switch_percent),
+    names_to = "technology",
+    values_to = "percentage"
+  ) %>%
+  mutate(technology = factor(technology, 
+    levels = c("ev_percent", "solar_percent", "smartphone_percent", 
+               "internet_percent", "skills_percent", "commute_percent", "fuel_switch_percent"),
+    labels = c("Electric Vehicle", "Solar Panels", "Smartphone", 
+               "Internet", "Digital Skills", "Sustainable Transport", "Clean Heating Switch")))
+
+ggplot(uk_props_long, aes(x = weighted_decile, y = percentage, color = technology)) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~year) +
+  theme_minimal() +
+  labs(
+    title = "Technology Adoption by Income Decile in UK",
+    x = "Income Decile",
+    y = "Percentage of Households (%)",
+    color = "Technology"
+  ) +
+  scale_x_continuous(breaks = 1:10) +
+  theme(
+    legend.position = "bottom",
+    legend.box = "vertical",
+    panel.grid.minor = element_blank()
+  ) +
+  guides(color = guide_legend(nrow = 2)) # Makes legend more compact
+
+ggplot(uk_props_long[uk_props_long$percentage != 0, ], aes(x = year, y = percentage, color = technology)) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~weighted_decile) +
+  theme_minimal() +
+  labs(
+    title = "Technology Adoption Over Time by Income Decile UK",
+    x = "Year",
+    y = "Percentage of Households (%)",
+    color = "Technology"
+  ) +
+  theme(
+    legend.position = "bottom",
+    legend.box = "vertical",
+    panel.grid.minor = element_blank()
+  ) +
+  guides(color = guide_legend(nrow = 2))
+
+# Alternative visualization: Faceted plot for clearer viewing
+ggplot(uk_props_long, aes(x = weighted_decile, y = percentage)) +
+  geom_line(color = "grey70") +
+  geom_point(aes(color = technology), size = 3) +
+  facet_grid(technology ~ year) +
+  theme_minimal() +
+  labs(
+    title = "Technology Adoption by Income Decile in UK",
+    x = "Income Decile",
+    y = "Percentage of Households (%)"
+  ) +
+  scale_x_continuous(breaks = seq(2, 10, 2)) +
+  theme(
+    legend.position = "none",
+    panel.grid.minor = element_blank(),
+    strip.text = element_text(face = "bold"),
+    panel.spacing.y = unit(1, "lines")
+  )
+
+uk_props_long <- uk_props_long %>%
+  rename(decile = weighted_decile)
+```
+
+### Germany Uptake Rates
+
+For Germany I have information on solar, EV, retrofitting, smartphone, internet.
+
+EV only exists in 2015 and 2020. (note it is full EV or biodiesel, no hybrid category) Retrofitting is asked from 2010 - 2015, and 2019 Smartphone
+
+```{r DEU Uptake Rates, echo=FALSE}
+
+deu_props <- DEU %>%
+  group_by(syear, weighted_decile) %>%
+  summarise(
+    n_total = n(),
+    hybrid_prop = sum(hli0121 == 1 | hli0123 == 1 | hli0124 == 1 | 
+                     hli0114 == 1 | hli0115 == 1 | hli0116 == 1 | hli0117 == 1, 
+                     na.rm = TRUE) / n(),
+    solar_prop = sum(hgeqpsol == 1, na.rm = TRUE) / n(),
+    renovation_prop = sum(hgcondit == 2 | hgcondit == 3, na.rm = TRUE) /n(),
+    smartphone_prop = sum(hgeqptel == 1, na.rm = TRUE) / n(),
+    internet_new = sum(hlf0169_h == 1 , na.rm = TRUE) / n()
+  ) %>%
+  group_by(weighted_decile) %>%
+  arrange(syear) %>%
+  mutate(
+    internet_prop = pmin(cumsum(internet_new), 1),
+    smartphone_prop = if_else(syear > 2015, 1, smartphone_prop)
+  ) %>%
+  mutate(
+    hybrid_percent = hybrid_prop * 100,
+    solar_percent = solar_prop * 100, 
+    renovation_percent = renovation_prop * 100, 
+    smartphone_percent = smartphone_prop * 100,
+    internet_percent = internet_prop * 100
+  )
+
+
+deu_props_long <- deu_props %>%
+  dplyr::select(syear, hybrid_percent, solar_percent, renovation_percent, smartphone_percent, internet_percent) %>%  
+  pivot_longer(
+    cols = c(hybrid_percent, solar_percent, renovation_percent, smartphone_percent, internet_percent),
+    names_to = "technology",
+    values_to = "percentage"
+  ) %>%
+  mutate(technology = factor(technology, 
+    levels = c("hybrid_percent", "solar_percent", "renovation_percent", "smartphone_percent", "internet_percent"),
+    labels = c("Hybrid/EV", "Solar Panels", "Home Renovations", "Owns a Smartphone", "Internet access")))
+
+ggplot(deu_props_long, aes(x = weighted_decile, y = percentage, color = technology)) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~syear) +
+  theme_minimal() +
+  labs(
+    title = "Technology Adoption by Income Decile in Germany",
+    x = "Income Decile",
+    y = "Percentage of Households (%)",
+    color = "Technology"
+  ) +
+  scale_x_continuous(breaks = 1:10) +
+  theme(legend.position = "bottom")
+
+ggplot(deu_props_long[deu_props_long$percentage != 0, ], aes(x = syear, y = percentage, color = technology)) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~weighted_decile) +
+  theme_minimal() +
+  labs(
+    title = "Technology Adoption Over Time by Income Decile Germany",
+    x = "Year",
+    y = "Percentage of Households (%)",
+    color = "Technology"
+  ) +
+  theme(
+    legend.position = "bottom",
+    legend.box = "vertical",
+    panel.grid.minor = element_blank()
+  ) +
+  guides(color = guide_legend(nrow = 2))
+
+deu_props_long <- deu_props_long %>%
+  rename(year = syear) %>%
+  rename(decile = weighted_decile)
+
+```
+
+### Combined Uptake Rates
+Not all technologies in each country have the same year of start and end data. I now get data as close to 2015 start and 2021 end as possible. Look at year ranges available for uptake rates for each country and technology at decile level. 
+
+```{r combined uptake rates, echo=FALSE}
+
+# Calculate uptake rates for US
+us_uptake_rates <- map_df(unique(us_props_long$technology), function(tech) {
+  us_props_long %>%
+    filter(
+      technology == tech,
+      year %in% c(2015, 2021)
+    ) %>%
+    dplyr::select(year, decile, technology, percentage) %>%
+    pivot_wider(
+      names_from = year,
+      values_from = percentage
+    ) %>%
+    mutate(
+      start_year = 2015,
+      uptake_rate = !!sym(as.character(2021)) - !!sym(as.character(2015)),
+      country = "US"
+    )
+})
+
+# Calculate uptake rates for UK
+uk_uptake_rates <- map_df(unique(uk_props_long$technology), function(tech) {
+  # Set start year based on technology
+  start_year <- if(tech == "Solar Panels") {
+    2012
+  } else {
+    2015
+  }
+  
+  # Set end year based on technology
+  end_year <- if(tech == "Digital Skills") {
+    2019
+  } else {
+    2021
+  }
+  
+  uk_props_long %>%
+    filter(
+      technology == tech,
+      year %in% c(start_year, end_year)
+    ) %>%
+    dplyr::select(year, decile, technology, percentage) %>%
+    pivot_wider(
+      names_from = year,
+      values_from = percentage
+    ) %>%
+    mutate(
+      start_year = start_year,
+      end_year = end_year,
+      uptake_rate = !!sym(as.character(end_year)) - !!sym(as.character(start_year)),
+      country = "UK"
+    )
+})
+
+deu_uptake_rates <- map_df(unique(deu_props_long$technology), function(tech) {
+  # Set start year based on technology
+  start_year <- if(tech == "Home Renovations") {
+    2010
+  } else {
+    2015  
+  }
+  
+  # Set end year based on technology
+  end_year <- case_when(
+    tech == "Home Renovations" ~ 2015, 
+    tech == "Hybrid/EV" ~ 2020,
+    TRUE ~ 2021
+  )
+  
+  deu_props_long %>%
+    filter(
+      technology == tech,
+      year %in% c(start_year, end_year)
+    ) %>%
+    dplyr::select(year, decile, technology, percentage) %>%
+    pivot_wider(
+      names_from = year,
+      values_from = percentage
+    ) %>%
+    mutate(
+      start_year = start_year,
+      end_year = end_year,
+      uptake_rate = !!sym(as.character(end_year)) - !!sym(as.character(start_year)),
+      country = "Germany"
+    )
+})
+# Combine all datasets
+all_uptake_rates <- bind_rows(us_uptake_rates, uk_uptake_rates, deu_uptake_rates)
+
+# Print summary of start years used
+print("Start years used for each technology by country:")
+all_uptake_rates %>%
+  distinct(country, technology, start_year) %>%
+  arrange(country, technology) %>%
+  print(n = Inf)
+
+# Create heatmap
+heatmap_all <- ggplot(all_uptake_rates, 
+  aes(x = factor(decile), 
+      y = paste0(technology, " (", start_year, "-", ifelse(country == "Germany" & technology == "Home Renovation", "2019", "2021"), ")"), 
+      fill = uptake_rate)) +
+  geom_tile() +
+  scale_fill_gradient2(
+    low = "red",
+    mid = "white",
+    high = "darkgreen",
+    midpoint = 0,
+    limits = c(-5, 5),
+    oob = scales::squish
+  ) +
+  theme_minimal() +
+  facet_wrap(~country) +
+  labs(
+    title = "Technology Uptake Rates by Income Decile",
+    subtitle = "Percentage Point Change in Adoption (Capped at ±5 percentage points)",
+    x = "Income Decile",
+    y = NULL,
+    fill = "Percentage\nPoint Change"
+  ) +
+  theme(
+    panel.grid = element_blank(),
+    axis.text = element_text(size = 10),
+    axis.text.y = element_text(hjust = 1),
+    legend.position = "right"
+  )
+
+# Create boxplot
+boxplot_all <- ggplot(all_uptake_rates, 
+  aes(y = paste0(technology, " (", start_year, "-", ifelse(country == "Germany" & technology == "Home Renovations", "2019", "2021"), ")"), 
+      fill = country)) +
+  geom_vline(xintercept = 0, color = "grey80", linetype = "dashed") +
+  geom_boxplot(aes(x = uptake_rate), width = 0.7, alpha = 0.7, position = position_dodge(width = 0.8)) +
+  scale_fill_brewer(palette = "Set2") +
+  theme_minimal() +
+  labs(
+    title = "Technology Uptake Distribution by Type and Country",
+    subtitle = "Boxplots show distribution across income deciles",
+    x = "Percentage Point Change",
+    y = NULL,
+    fill = "Country"
+  ) +
+  theme(
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_blank(),
+    legend.position = "bottom"
+  )
+
+# Display plots
+heatmap_all
+boxplot_all
+```
+
+There are two outlier technologies for uptake rates. The first is Sustainable Transit in the UK. UK commute (sustainable transport) only shows commuting patterns for those who work, so potentially hides significant commuting preferences, particularly for those out of work or job seeking and is being compared against COVID so less people were commuting to work in 2021, no matter their method. The second is home renovations in Germany. If i change the year to later, the figure does go up, but 2010 shows a renovation boom that is lost in later years.
+
+For fun, I'm also looking at US state variation, but this is for PhD, please ignore in meeting.
+
+```{r US Regional Adoption, include=FALSE}
+# Calculate state adoption rates
+state_adoption <- US %>%
+  group_by(year, hh_state) %>%
+  summarise(
+    n_total = n(),
+    smartphone_prop = mean(smartphone == 1, na.rm = TRUE),
+    hybrid_prop = mean(hybrid == 1, na.rm = TRUE),
+    solar_prop = mean(heat_method == 6, na.rm = TRUE),
+    internet_prop = mean(computer == 1, na.rm = TRUE),
+    repairs_prop = mean(hh_repair > 1, na.rm = TRUE),
+    skills_prop = mean(internet == 1, na.rm = TRUE),
+    fuel_switch_prop = mean(switched_to_electric | switched_to_solar, na.rm = TRUE)
+  ) %>%
+  mutate(
+    smartphone_percent = smartphone_prop * 100,
+    hybrid_percent = hybrid_prop * 100,
+    solar_percent = solar_prop * 100,
+    internet_percent = internet_prop * 100,
+    repairs_percent = repairs_prop * 100,
+    skills_percent = skills_prop * 100,
+    fuel_switch_percent = fuel_switch_prop * 100
+  )
+
+# Convert to long format
+state_adoption_long <- state_adoption %>%
+  pivot_longer(
+    cols = ends_with("percent"),
+    names_to = "technology",
+    values_to = "percentage"
+  ) %>%
+  mutate(technology = factor(technology,
+    levels = c("smartphone_percent", "hybrid_percent", "solar_percent",
+               "internet_percent", "repairs_percent", "skills_percent",
+               "fuel_switch_percent"),
+    labels = c("Smartphone", "Hybrid/EV", "Solar Panels",
+               "Internet", "Home Repairs", "Digital Skills",
+               "Clean Heating Switch")
+  ))
+
+# Calculate state growth (2015-2020)
+state_growth <- state_adoption_long %>%
+  filter(year %in% c(2015, 2021)) %>%
+  dplyr::select(year, hh_state, technology, percentage) %>%
+  pivot_wider(
+    names_from = year,
+    values_from = percentage,
+    names_prefix = "year_"
+  ) %>%
+  mutate(
+    growth_rate = pmax(year_2021 - year_2015, 0)
+  )
+
+# Create heatmap of state growth (top 20 states by average growth)
+top_states <- state_growth %>%
+  group_by(hh_state) %>%
+  summarise(mean_growth = mean(growth_rate, na.rm = TRUE)) %>%
+  arrange(desc(mean_growth)) %>%
+  head(20) %>%
+  pull(hh_state)
+
+ggplot(state_growth %>% filter(hh_state %in% top_states),
+       aes(y = reorder(hh_state, growth_rate), x = technology, fill = growth_rate)) +
+  geom_tile() +
+  scale_fill_gradient(low = "white", high = "darkgreen") +
+  theme_minimal() +
+  labs(
+    title = "Technology Adoption Growth by State (2015-2020)",
+    subtitle = "Top 20 states by average growth rate across technologies",
+    x = "Technology",
+    y = "State",
+    fill = "Growth Rate (%)"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid = element_blank()
+  )
+
+# Create boxplot of state distributions by technology
+ggplot(state_growth, aes(y = reorder(technology, growth_rate, FUN = median))) +
+  geom_boxplot(aes(x = growth_rate), fill = "lightgreen", alpha = 0.5) +
+  geom_jitter(aes(x = growth_rate), height = 0.2, alpha = 0.4) +
+  theme_minimal() +
+  labs(
+    title = "Distribution of Technology Adoption Growth Across States (2015-2020)",
+    subtitle = "Each point represents a state",
+    x = "Percentage Point Growth",
+    y = NULL
+  )
+
+# Calculate summary statistics for each state
+state_summary <- state_growth %>%
+  group_by(hh_state) %>%
+  summarise(
+    mean_growth = mean(growth_rate, na.rm = TRUE),
+    max_growth = max(growth_rate, na.rm = TRUE),
+    top_technology = technology[which.max(growth_rate)],
+    n_technologies = sum(growth_rate > 0, na.rm = TRUE)
+  ) %>%
+  arrange(desc(mean_growth))
+
+print("Top 10 States by Average Growth Rate:")
+print(head(state_summary, 10))
+
+```
+### CAGR
+
+Two point estimate is not preferable so use logistic cagr. 
+```{r CAGR, echo=FALSE}
+calculate_adoption_rate <- function(data) {
+  data %>%
+    group_by(technology, decile) %>%
+    # Remove NaN and zero values
+    filter(!is.na(percentage) & percentage > 0) %>%
+    # Get number of observations
+    mutate(n_obs = n()) %>%
+    arrange(year) %>%
+    summarise(
+      start_year = first(year),
+      end_year = last(year),
+      start_value = first(percentage),
+      end_value = last(percentage),
+      n_years = end_year - start_year,
+      n_observations = n(),
+      # Calculate growth rate based on data availability
+      cagr = case_when(
+        # If only one observation, use that observation as the rate
+        n_observations == 1 ~ start_value,
+        # If start and end values are the same, use that value
+        start_value == end_value ~ start_value,
+        # If we have less than 5 observations, use two most recent years
+        n_observations < 5 ~ {
+          ((end_value/start_value)^(1/n_years) - 1) * 100
+        },
+        # If more than 5 observations, calculate standard CAGR
+        TRUE ~ ((end_value/start_value)^(1/n_years) - 1) * 100
+      ),
+      data_type = case_when(
+        n_observations == 1 ~ "single_point",
+        n_observations < 5 ~ "two_point",
+        TRUE ~ "multi_point"
+      ),
+      .groups = 'drop'
+    )
+}
+
+# Calculate CAGR
+deu_cagr_results <- calculate_adoption_rate(deu_props_long) 
+us_cagr_results <- calculate_adoption_rate(us_props_long)
+uk_cagr_results <-calculate_adoption_rate(uk_props_long)
+
+
+# Combine all CAGR results
+all_cagr <- bind_rows(
+  deu_cagr_results %>% mutate(country = "Germany"),
+  us_cagr_results %>% mutate(country = "US"),
+  uk_cagr_results %>% mutate(country = "UK")
+) %>%
+  mutate(technology = case_when(
+    technology =="Electric Vehicle" ~ "Hybrid/EV",
+    technology =="Internet" ~ "Internet access",
+    technology == "Smartphone" ~ "Owns a Smartphone",
+    TRUE ~ technology
+  ))
+
+# Create main plot comparing technologies across countries and deciles
+ggplot(all_cagr, aes(x = factor(decile), y = cagr, color = country)) +
+  geom_point(size = 2, alpha = 0.7) +
+  geom_line(aes(group = country)) +
+  facet_wrap(~technology, scales = "free_y") +
+  theme_minimal() +
+  labs(
+    title = "Technology Adoption CAGR by Country and Income Decile",
+    x = "Income Decile",
+    y = "CAGR (%)",
+    color = "Country"
+  ) +
+  theme(
+    panel.grid.minor = element_blank(),
+    axis.text = element_text(size = 9),
+    strip.text = element_text(size = 10, face = "bold")
+  )
+
+# Create boxplot to show distribution of CAGR by technology and country
+ggplot(all_cagr, aes(x = country, y = cagr, fill = country)) +
+  geom_boxplot(alpha = 0.7) +
+  facet_wrap(~technology, scales = "free_y") +
+  theme_minimal() +
+  labs(
+    title = "Distribution of CAGR by Technology and Country",
+    x = "",
+    y = "CAGR (%)",
+    fill = "Country"
+  ) +
+  theme(
+    panel.grid.minor = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    strip.text = element_text(size = 10, face = "bold")
+  )
+
+# Calculate summary statistics
+cagr_summary <- all_cagr %>%
+  group_by(country, technology) %>%
+  summarise(
+    mean_cagr = mean(cagr, na.rm = TRUE),
+    median_cagr = median(cagr, na.rm = TRUE),
+    sd_cagr = sd(cagr, na.rm = TRUE),
+    min_cagr = min(cagr, na.rm = TRUE),
+    max_cagr = max(cagr, na.rm = TRUE),
+    .groups = 'drop'
+  )
+
+# Create a heatmap of mean CAGR
+ggplot(cagr_summary, aes(x = country, y = technology, fill = mean_cagr)) +
+  geom_tile() +
+  scale_fill_gradient2(
+    low = "red", 
+    mid = "white",
+    high = "blue",
+    midpoint = 0,
+    name = "Mean CAGR (%)"
+  ) +
+  theme_minimal() +
+  labs(
+    title = "Mean CAGR by Technology and Country",
+    x = "",
+    y = ""
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid = element_blank()
+  )
+
+# Print summary statistics
+print("Summary Statistics of CAGR by Country and Technology")
+print(cagr_summary %>% arrange(country, technology))
+```
+
+Log based growth
+
+### Log Growth 
+```{r log based growth rate, echo=FALSE}
+calculate_adoption_rate <- function(data) {
+  data %>%
+    group_by(technology, decile) %>%
+    # Remove NaN and zero values
+    filter(!is.na(percentage) & percentage > 0) %>%
+    # Get number of observations
+    mutate(n_obs = n()) %>%
+    arrange(year) %>%
+    summarise(
+      start_year = first(year),
+      end_year = last(year),
+      start_value = first(percentage),
+      end_value = last(percentage),
+      n_years = end_year - start_year,
+      n_observations = n(),
+      # Calculate log-based growth rate
+      cagr = case_when(
+        # If only one observation, use that observation as the rate
+        n_observations == 1 ~ start_value,
+        # If start and end values are the same, use that value
+        start_value == end_value ~ start_value,
+        # Use log-based calculation to capture positive growth
+        TRUE ~ {
+          # Calculate log change
+          log_change <- (log(end_value/start_value) / n_years * 100)
+          # If log change is negative, use a small positive value
+          ifelse(log_change < 0, 0.1, log_change)
+        }
+      ),
+      data_type = case_when(
+        n_observations == 1 ~ "single_point",
+        n_observations < 5 ~ "two_point",
+        TRUE ~ "multi_point"
+      ),
+      .groups = 'drop'
+    )
+}
+
+us_growth_results<- calculate_adoption_rate(us_props_long)
+uk_growth_results<- calculate_adoption_rate(uk_props_long)
+deu_growth_results<- calculate_adoption_rate(deu_props_long)
+
+# Combine the results from different countries
+combined_growth <- bind_rows(
+  mutate(us_growth_results, country = "US"),
+  mutate(uk_growth_results, country = "UK"),
+  mutate(deu_growth_results, country = "Germany")
+) %>%
+    mutate(technology = case_when(
+    technology =="Electric Vehicle" ~ "Hybrid/EV",
+    technology =="Internet" ~ "Internet access",
+    technology == "Smartphone" ~ "Owns a Smartphone",
+    TRUE ~ technology
+  ))
+
+
+# Create a boxplot to show distribution of growth rates by technology and country
+ggplot(combined_growth, aes(x = technology, y = cagr, fill = technology)) +
+  geom_boxplot() +
+  facet_wrap(~ country, scales = "free_y") +
+  labs(
+    title = "Technology Adoption Growth Rates by Country",
+    x = "Technology",
+    y = "Log-based Compound Annual Growth Rate (%)",
+    fill = "Technology"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "none"
+  ) +
+  scale_fill_brewer(palette = "Set3")
+
+# Print summary statistics for each technology by country
+summary_stats <- combined_growth %>%
+  group_by(country, technology) %>%
+  summarise(
+    mean_growth = mean(cagr),
+    median_growth = median(cagr),
+    max_growth = max(cagr),
+    min_growth = min(cagr)
+  ) %>%
+  arrange(country, desc(mean_growth))
+
+print(summary_stats)
+
+ggplot(combined_growth, aes(x = factor(decile), y = cagr, fill = technology)) +
+ geom_boxplot() +
+ facet_wrap(~ country, scales = "free_y") +
+ labs(
+   title = "Technology Adoption Growth Rates by Decile and Country",
+   x = "Decile",
+   y = "Log-based Compound Annual Growth Rate (%)",
+   fill = "Technology"
+ ) +
+ theme_minimal() +
+ theme(
+   axis.text.x = element_text(angle = 0),
+   legend.position = "bottom"
+ ) +
+ scale_fill_brewer(palette = "Set3")
+
+summary_stats_decile <- combined_growth %>%
+ group_by(country, technology, decile) %>%
+ summarise(
+   mean_growth = mean(cagr),
+   median_growth = median(cagr),
+   max_growth = max(cagr),
+   min_growth = min(cagr)
+ ) %>%
+ arrange(country, technology, decile)
+
+print(summary_stats_decile)
+
+```
+
+
+## Step 2: Baseline Model
+
+In the baseline model I assume no targeted policy to change distribution (i.e. 3% for 10th decile vs 15% for 1st in 2020 with a constant growth projection to 2050). Model aims to reach exogenously government provided diffusion target for each technology (e.g.40% for housing retrofit vs 60% for EVs). 
+To discuss with Charlie: how does government goal fit in with distribution ? for now, I dont have government level, though do have in earlier version, (see edits v1). I just made it 100 in the first level and didn't adopt for government target, just let the logistic growth rn to 2050. 
+
+
+```{r Old US Baseline, echo=FALSE}
+# Set government-specified saturation levels
+us_saturation_levels <- tibble(
+  technology = c(
+    "Hybrid/EV", 
+    "Solar Panels", 
+    "Home Renovations", 
+    "Smartphone", 
+    "Internet",
+    "Clean Heating Switch",
+    "Digital Skills"
+  ),
+  saturation = c(
+    60,   # EVs government target
+    45,   # Solar Panels government target
+    45,   # Home Renovations government target
+    100,  # Smartphone government target
+    100,  # Internet access government target
+    69,   # Clean Heating Switch government target
+    90    # Digital Skills government target
+  ),
+  # Add technology maturity classification
+  maturity = c(
+    "emerging",    # EVs
+    "emerging",    # Solar
+    "mature",      # Home Renovations
+    "saturated",   # Smartphone
+    "saturated",   # Internet
+    "transitioning", # Clean Heating
+    "transitioning"  # Digital Skills
+  )
+)
+
+# Function to calculate logistic projection with improved S-curve dynamics
+logistic_projection <- function(start_value, cagr, target_year, end_year, us_saturation_level, maturity) {
+  years_forward <- target_year - end_year
+  
+  # Base growth rate from CAGR
+  base_r <- if(is.na(cagr) || cagr == 0) {
+    0.02  # Increased default minimal growth
+  } else {
+    log(1 + cagr/100)
+  }
+  
+  # Adjust growth rate based on technology maturity and gap to target
+  saturation_gap <- (us_saturation_level - start_value)/us_saturation_level
+  
+  maturity_factor <- case_when(
+    maturity == "emerging" ~ 2.0,      # Accelerated growth for emerging tech
+    maturity == "transitioning" ~ 1.5,  # Moderate acceleration
+    maturity == "mature" ~ 1.0,        # Normal growth
+    maturity == "saturated" ~ 0.5      # Slower growth near saturation
+  )
+  
+  # Enhanced S-curve dynamics
+  midpoint_factor <- if(start_value < (us_saturation_level/2)) {
+    1.5  # Accelerate growth below midpoint
+  } else {
+    0.8  # Decelerate above midpoint
+  }
+  
+  # Combine adjustments
+  adjusted_r <- base_r * maturity_factor * midpoint_factor * (1 + saturation_gap)
+  
+  # Calculate projection ensuring we don't exceed saturation
+  base_value <- min(
+    us_saturation_level,
+    us_saturation_level / (1 + ((us_saturation_level - start_value)/start_value) * exp(-adjusted_r * years_forward))
+  )
+  
+  # Uncertainty bands that respect saturation
+  uncertainty <- base_value * 0.1 * (years_forward/30) * saturation_gap
+  lower_bound <- max(0, base_value - uncertainty)
+  upper_bound <- min(us_saturation_level, base_value + uncertainty)
+  
+  c(base_value, lower_bound, upper_bound)
+}
+
+# Create projections
+us_projections <- us_growth_results %>%
+  left_join(us_saturation_levels, by = "technology") %>%
+  rowwise() %>%
+  mutate(
+    # 2030 projections
+    proj_2030 = list(logistic_projection(end_value, cagr, 2030, end_year, saturation, maturity)),
+    proj_2030_main = proj_2030[1],
+    proj_2030_lower = proj_2030[2],
+    proj_2030_upper = proj_2030[3],
+    
+    # 2050 projections
+    proj_2050 = list(logistic_projection(end_value, cagr, 2050, end_year, saturation, maturity)),
+    proj_2050_main = proj_2050[1],
+    proj_2050_lower = proj_2050[2],
+    proj_2050_upper = proj_2050[3]
+  ) %>%
+  ungroup()
+
+# Create visualization
+ggplot() +
+  # Target level
+  geom_hline(data = us_saturation_levels, 
+             aes(yintercept = saturation),
+             linetype = "dashed", color = "gray50") +
+  
+  # Current values
+  geom_line(data = us_projections, 
+            aes(x = factor(decile), y = end_value, group = 1, color = "Current"),
+            size = 1) +
+  geom_point(data = us_projections, 
+             aes(x = factor(decile), y = end_value, color = "Current"),
+             size = 3) +
+  
+  # 2030 projections
+  geom_ribbon(data = us_projections,
+              aes(x = factor(decile), 
+                  ymin = proj_2030_lower,
+                  ymax = proj_2030_upper,
+                  group = 1),
+              fill = "blue", alpha = 0.1) +
+  geom_line(data = us_projections, 
+            aes(x = factor(decile), y = proj_2030_main, group = 1, color = "2030"),
+            size = 1) +
+  geom_point(data = us_projections, 
+             aes(x = factor(decile), y = proj_2030_main, color = "2030"),
+             size = 3) +
+  
+  # 2050 projections
+  geom_ribbon(data = us_projections,
+              aes(x = factor(decile), 
+                  ymin = proj_2050_lower,
+                  ymax = proj_2050_upper,
+                  group = 1),
+              fill = "red", alpha = 0.1) +
+  geom_line(data = us_projections, 
+            aes(x = factor(decile), y = proj_2050_main, group = 1, color = "2050"),
+            size = 1) +
+  geom_point(data = us_projections, 
+             aes(x = factor(decile), y = proj_2050_main, color = "2050"),
+             size = 3) +
+  
+  facet_wrap(~technology) +
+  theme_minimal() +
+  scale_color_manual(values = c("Current" = "black", "2030" = "blue", "2050" = "red")) +
+  labs(
+    title = "US Technology Adoption Projections by Income Decile",
+    subtitle = "Projections to 2030 and 2050 with government targets (dashed lines)",
+    x = "Income Decile",
+    y = "Adoption Rate (%)",
+    color = "Year"
+  ) +
+  theme(
+    panel.grid.minor = element_blank(),
+    legend.position = "bottom",
+    strip.text = element_text(size = 10, face = "bold")
+  )
+
+# Print summary statistics
+summary_stats <- us_projections %>%
+  group_by(technology) %>%
+  summarise(
+    target = first(saturation),
+    mean_current = mean(end_value, na.rm = TRUE),
+    mean_2030 = mean(proj_2030_main, na.rm = TRUE),
+    mean_2050 = mean(proj_2050_main, na.rm = TRUE),
+    gap_to_target = target - mean_2050,
+    .groups = 'drop'
+  )
+
+print("Progress toward government targets:")
+print(summary_stats)
+
+
+us_projections_long <- us_projections %>%
+  dplyr::select(technology, decile, 
+                current = end_value, 
+                proj_2030 = proj_2030_main, 
+                proj_2050 = proj_2050_main) %>%
+  pivot_longer(
+    cols = c(current, proj_2030, proj_2050),
+    names_to = "year_type",
+    values_to = "adoption_rate"
+  ) %>%
+  mutate(
+    year = case_when(
+      year_type == "current" ~ 2021,
+      year_type == "proj_2030" ~ 2030,
+      year_type == "proj_2050" ~ 2050
+    )
+  )
+
+# Visualization
+ggplot(us_projections_long, aes(x = year, y = adoption_rate, 
+                                color = technology, 
+                                group = technology)) +
+  geom_line(size = 1) +
+  geom_point(size = 3) +
+  facet_wrap(~ decile, ncol = 5, 
+             labeller = labeller(decile = function(x) paste("Decile", x))) +
+  geom_hline(data = us_saturation_levels, 
+             aes(yintercept = saturation), 
+             linetype = "dashed", 
+             color = "gray50") +
+  labs(
+    title = "US Baseline Technology Adoption Across Deciles Over Time",
+    subtitle = "Current and Projected Adoption Rates (with government targets)",
+    x = "Year",
+    y = "Adoption Rate (%)",
+    color = "Technology"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid.minor = element_blank(),
+    legend.position = "bottom",
+    strip.text = element_text(size = 10, face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  ) +
+  scale_x_continuous(breaks = c(2021, 2030, 2050))
+
+
+# Visualization
+ggplot(us_projections_long, aes(x = year, y = adoption_rate, 
+                               color = factor(decile), 
+                               group = decile)) +
+ geom_line(size = 1) +
+ geom_point(size = 3) +
+ facet_wrap(~ technology, scales = "free_y") +
+ labs(
+   title = "Technology Adoption Progression by Decile",
+   subtitle = "Adoption Rates Across Years",
+   x = "Year",
+   y = "Adoption Rate (%)",
+   color = "Income Decile"
+ ) +
+ theme_minimal() +
+ theme(
+   panel.grid.minor = element_blank(),
+   legend.position = "bottom",
+   strip.text = element_text(size = 10, face = "bold"),
+   axis.text.x = element_text(angle = 45, hjust = 1)
+ ) +
+ scale_x_continuous(breaks = c(2021, 2030, 2050))
+
+
+# Updated logistic projection function
+logistic_projection <- function(start_value, cagr, target_year, end_year, us_saturation_level, maturity) {
+  years_forward <- target_year - end_year
+  
+  # Base growth rate from CAGR
+  base_r <- if(is.na(cagr) || cagr == 0) {
+    0.02  # Increased default minimal growth
+  } else {
+    log(1 + cagr/100)
+  }
+  
+  # Adjust growth rate based on technology maturity and gap to target
+  saturation_gap <- (100 - start_value)/100
+  
+  maturity_factor <- case_when(
+    maturity == "emerging" ~ 2.0,      # Accelerated growth for emerging tech
+    maturity == "transitioning" ~ 1.5, # Moderate acceleration
+    maturity == "mature" ~ 1.0,        # Normal growth
+    maturity == "saturated" ~ 0.5      # Slower growth near saturation
+  )
+  
+  # Enhanced S-curve dynamics
+  midpoint_factor <- if(start_value < 50) {
+    1.5  # Accelerate growth below midpoint
+  } else {
+    0.8  # Decelerate above midpoint
+  }
+  
+  # Combine adjustments
+  adjusted_r <- base_r * maturity_factor * midpoint_factor
+  
+  # Calculate projection ensuring we don't exceed 100%
+  projected_value <- min(
+    100,  # Cap at 100%
+    start_value * exp(adjusted_r * years_forward)
+  )
+  
+  # Calculate uncertainty bands
+  uncertainty <- projected_value * 0.1 * (years_forward/30)
+  lower_bound <- max(0, projected_value - uncertainty)
+  upper_bound <- min(100, projected_value + uncertainty)
+  
+  c(projected_value, lower_bound, upper_bound)
+}
+
+# Create projections
+us_projections <- us_growth_results %>%
+  left_join(us_saturation_levels, by = "technology") %>%
+  rowwise() %>%
+  mutate(
+    # 2030 projections
+    proj_2030 = list(logistic_projection(end_value, cagr, 2030, end_year, saturation, maturity)),
+    proj_2030_main = proj_2030[1],
+    proj_2030_lower = proj_2030[2],
+    proj_2030_upper = proj_2030[3],
+    
+    # 2050 projections
+    proj_2050 = list(logistic_projection(proj_2030_main, cagr, 2050, 2030, saturation, maturity)),
+    proj_2050_main = proj_2050[1],
+    proj_2050_lower = proj_2050[2],
+    proj_2050_upper = proj_2050[3]
+  ) %>%
+  ungroup()
+
+# Print summary statistics
+us_summary_stats <- us_projections %>%
+  group_by(technology) %>%
+  summarise(
+    target = first(saturation),
+    mean_current = mean(end_value, na.rm = TRUE),
+    mean_2030 = mean(proj_2030_main, na.rm = TRUE),
+    mean_2050 = mean(proj_2050_main, na.rm = TRUE),
+    gap_to_target = target - mean_2050,
+    .groups = 'drop'
+  )
+
+```
+```{r Updated Baseline, echo=FALSE}
+calculate_conservative_growth <- function(cagr, start_value) {
+    # Apply more conservative adjustments for high growth rates
+    if (abs(cagr) > 5) {
+        # For high growth rates, use a declining scale
+        damping_factor <- 5 / abs(cagr)
+        growth_rate <- sign(cagr) * min(abs(cagr) * damping_factor, 5)
+    } else {
+        growth_rate <- cagr
+    }
+    
+    # Print diagnostics
+    cat(sprintf("Original CAGR: %.2f%%\n", cagr))
+    cat(sprintf("Adjusted growth rate: %.2f%%\n", growth_rate))
+    cat(sprintf("Start value: %.2f%%\n", start_value))
+    
+    return(growth_rate)
+}
+
+# Function for logistic growth forecasting
+forecast_smooth_logistic <- function(data, technology_val, decile_val, forecast_year = 2050) {
+    # Create model data for specific decile and technology
+    model_data <- data %>%
+        filter(technology == technology_val, decile == decile_val) %>%
+        arrange(end_year)
+    
+    # Check if we have valid data
+    if(nrow(model_data) == 0) {
+        cat("No valid data for", technology_val, "Decile", decile_val, "\n")
+        return(NULL)
+    }
+    
+    # Calculate growth rate using conservative approach
+    growth_rate <- calculate_conservative_growth(
+        cagr = model_data$cagr[1],
+        start_value = model_data$end_value[1]
+    )
+    
+    start_value <- model_data$end_value[1]
+    start_year <- model_data$end_year[1]
+    
+    # Calculate logistic growth parameters
+    K <- 100  # Maximum adoption (100%)
+    r <- growth_rate / 100  # Convert percentage to decimal
+    
+    # Initial shift to align curve with start value
+    t0 <- -log((K/start_value) - 1) / r
+    
+    # Generate future years for prediction
+    future_years <- seq(start_year, forecast_year, by = 1)
+    
+    # Generate predictions using logistic function
+    predictions <- tibble(
+        year = future_years,
+        predicted_adoption = sapply(future_years, function(year) {
+            if(year <= start_year) return(start_value)
+            
+            # Time since start for logistic calculation
+            t <- year - start_year + t0
+            
+            # Logistic function prediction
+            predicted <- K / (1 + exp(-r * t))
+            
+            # Ensure predictions don't decrease and don't exceed 100%
+            min(100, max(predicted, start_value))
+        }),
+        decile = decile_val
+    )
+    
+    list(
+        predictions = predictions,
+        data = model_data,
+        growth_rate = growth_rate,
+        start_value = start_value,
+        start_year = start_year
+    )
+}
+
+# Function to plot growth curves
+plot_smooth_logistic <- function(forecasts_list, technology_val, 
+                               show_uncertainty = TRUE,
+                               uncertainty_range = 0.1) {
+    # Remove NULL entries
+    forecasts_list <- forecasts_list[!sapply(forecasts_list, is.null)]
+    
+    # Combine all predictions
+    all_predictions <- bind_rows(
+        lapply(forecasts_list, function(x) x$predictions)
+    )
+    
+    # Combine all historical data points
+    all_data <- bind_rows(
+        lapply(forecasts_list, function(x) {
+            tibble(
+                year = x$data$end_year,
+                adoption = x$data$end_value,
+                decile = x$predictions$decile[1]
+            )
+        })
+    )
+    
+    # Create base plot
+    p <- ggplot() +
+        # Historical data points
+        geom_point(data = all_data,
+                  aes(x = year, y = adoption, color = factor(decile)),
+                  alpha = 0.6, size = 2) +
+        # Forecast lines
+        geom_line(data = all_predictions,
+                 aes(x = year, y = predicted_adoption, color = factor(decile)))
+    
+    if(show_uncertainty) {
+        all_predictions <- all_predictions %>%
+            mutate(
+                lower_bound = pmax(0, predicted_adoption * (1 - uncertainty_range)),
+                upper_bound = pmin(100, predicted_adoption * (1 + uncertainty_range))
+            )
+        
+        p <- p + 
+            geom_ribbon(data = all_predictions,
+                       aes(x = year, 
+                           ymin = lower_bound, 
+                           ymax = upper_bound,
+                           fill = factor(decile)),
+                       alpha = 0.1)
+    }
+    
+    p + 
+        scale_color_viridis_d(name = "Income Decile") +
+        scale_fill_viridis_d(name = "Income Decile") +
+        theme_minimal() +
+        labs(
+            title = paste("Adoption Forecast by Income Decile:", technology_val),
+            subtitle = paste("Smoothed logistic projections to", max(all_predictions$year)),
+            x = "Year",
+            y = "Adoption Rate (%)"
+        ) +
+        scale_x_continuous(breaks = seq(2010, 2050, by = 5)) +
+        ylim(0, 100) +
+        theme(
+            panel.grid.minor = element_blank(),
+            legend.position = "right"
+        )
+}
+
+# Create nested list to store forecasts
+forecasts_by_country <- list()
+
+# First, look at the data
+cat("Summary of CAGRs by technology and country:\n")
+cagr_summary <- combined_growth %>%
+  group_by(technology, country) %>%
+  summarise(
+    min_cagr = min(cagr, na.rm = TRUE),
+    mean_cagr = mean(cagr, na.rm = TRUE),
+    max_cagr = max(cagr, na.rm = TRUE),
+    min_start = min(start_value, na.rm = TRUE),
+    max_start = max(start_value, na.rm = TRUE),
+    .groups = 'drop'
+  )
+print(cagr_summary)
+
+# Get unique combinations of country and technology
+country_tech_combos <- combined_growth %>%
+  dplyr::select(country, technology) %>%
+  distinct()
+
+# Generate forecasts for each country and technology
+for(i in 1:nrow(country_tech_combos)) {
+    current_country <- country_tech_combos$country[i]
+    current_tech <- country_tech_combos$technology[i]
+    
+    cat("\nProcessing", current_country, "-", current_tech, "\n")
+    
+    # Store forecasts for each decile
+    decile_forecasts <- list()
+    
+    # Filter data for current country and technology
+    current_data <- combined_growth %>%
+        filter(country == current_country,
+               technology == current_tech)
+    
+    # Print CAGR range for this technology-country combination
+    cat(sprintf("CAGR range for %s in %s: %.2f%% to %.2f%%\n", 
+                current_tech, current_country,
+                min(current_data$cagr), max(current_data$cagr)))
+    
+    # Generate forecasts for each decile
+    for(d in 1:10) {
+        decile_forecasts[[d]] <- forecast_smooth_logistic(
+            current_data, current_tech, d
+        )
+    }
+    
+    # Remove NULL entries
+    decile_forecasts <- decile_forecasts[!sapply(decile_forecasts, is.null)]
+    
+    # Store forecasts if we have valid results
+    if(length(decile_forecasts) > 0) {
+        if(!current_country %in% names(forecasts_by_country)) {
+            forecasts_by_country[[current_country]] <- list()
+        }
+        
+        forecasts_by_country[[current_country]][[current_tech]] <- decile_forecasts
+        
+        # Generate and print plot
+        plot <- plot_smooth_logistic(decile_forecasts, 
+                                   paste(current_country, "-", current_tech))
+        print(plot)
+        
+    }
+}
+
+# Create comparison plots across countries for each technology
+technologies <- unique(combined_growth$technology)
+
+for(tech in technologies) {
+    # Combine predictions from all countries for this technology
+    all_predictions <- bind_rows(lapply(names(forecasts_by_country), function(country) {
+        if(tech %in% names(forecasts_by_country[[country]])) {
+            forecasts <- forecasts_by_country[[country]][[tech]]
+            bind_rows(lapply(forecasts, function(x) {
+                x$predictions %>% 
+                dplyr::select(year, predicted_adoption, decile) %>%
+                mutate(country = country)
+            }))
+        }
+    }))
+    
+    if(nrow(all_predictions) > 0) {
+        # Create comparison plot
+        comparison_plot <- ggplot(all_predictions, 
+               aes(x = year, y = predicted_adoption, 
+                   color = factor(decile), linetype = country)) +
+            geom_line() +
+            facet_wrap(~country) +
+            scale_color_viridis_d(name = "Income Decile") +
+            theme_minimal() +
+            labs(
+                title = paste("Technology Adoption Forecast Comparison -", tech),
+                subtitle = "Projections by Country and Income Decile",
+                x = "Year",
+                y = "Adoption Rate (%)",
+                linetype = "Country"
+            ) +
+            theme(
+                panel.grid.minor = element_blank(),
+                legend.position = "right"
+            )
+        
+        print(comparison_plot)
+    }
+}
+
+# Save forecasts
+saveRDS(forecasts_by_country, "technology_forecasts.rds")
+
+```
+
+## Step 3: 2050 Diffusion Impacts
+
+Step 3 Estimate how distributional impacts of technology uptake affect final energy costs for household across time. Use survey data to estimate how final energy costs increase/decrease with different technologies including in a household (holding all other variables constant) in 2020. Then, hold energy prices static (very large assumption) to see how technology diffusion affects final energy costs for residential sector at decile level in 2050.
+
+I first get the average amount spent on energy, then roughly estimate how much is on gas vs electric, then get historical prices and convert amount spent to gas and eelctric to consumption. This is easier for some data (ex. US ) than others 
+
+take a simple model to turn the technology into electricity 
+```{r energy data, echo=FALSE}
+DEU <- DEU %>%
+  rename(year = syear)
+
+# US Data Source: EIA Average Retail Electricity and Gas 2005-2022
+us_prices <- tibble(
+  country = "US",
+  year = 2005:2022,
+  elec_price = c(9.45, 10.40, 10.65, 11.26, 11.51, 11.54, 11.72, 11.88, 12.13,
+                 12.52, 12.65, 12.55, 12.89, 12.87, 13.01, 13.15, 13.72, 14.77),  # cents per kWh
+  gas_price = c(4.72, 4.68, 4.46, 4.74, 4.14, 3.89, 3.76, 3.65, 3.52, 3.74, 
+                3.54, 3.43, 3.72, 3.58, 3.56, 3.68, 3.91, 5.45)   
+)
+
+# German Data Source: Federal Statistic Office of Germany 
+deu_prices <- tibble(
+  country = "DEU",
+  year = 2005:2022,
+  elec_price = c(
+  22.5, 23.8, 27.4, 30.9, 30.6, 30.6, 34.8, 33.3, 38.6, 38.6,
+  32.2, 33.3, 33.9, 35.4, 34.7, 36.5, 37.8, 35.7),  # cents per kWh (converted from EUR/kWh)
+  gas_price = c(2.05, 2.38, 2.73, 3.41, 3.07, 3.07, 3.07, 3.07, 3.07, 
+                3.07, 3.07, 3.07, 3.07, 3.07, 3.07, 3.07, 3.07, 3.41)   
+)
+
+# UK Data Source: UK Government Energy Price Statistics
+uk_prices <- tibble(
+  country = "UK",
+  year = 2005:2022,
+  elec_price = c(
+  15.65, 18.56, 21.11, 22.40, 22.36, 22.94, 23.15, 23.68, 23.54, 23.72, 25.10, 25.88, 
+  26.03, 27.14, 29.01, 31.65, 35.22, 40.01),  # cents per kWh (converted from pence/kWh)
+  gas_price = c(0.61, 0.60, 0.56, 0.59, 0.53, 0.49, 0.48, 0.46, 0.45, 0.47, 
+    0.46, 0.46, 0.51, 0.53, 0.56, 0.61, 0.66, 0.76)
+)
+
+# Combine all data
+historical_prices <- bind_rows(
+  us_prices,
+  deu_prices,
+  uk_prices
+)
+
+# Function to merge historical prices with country-specific datasets
+merge_prices <- function(country_data, country_name) {
+  country_data %>%
+    left_join(
+      historical_prices %>% filter(country == country_name),
+      by = "year"
+    )
+}
+
+# Create visualizations for available data
+create_price_plot <- function(data) {
+  ggplot(data %>% filter(!is.na(elec_price)), aes(x = year, color = country)) +
+    geom_line(aes(y = elec_price, linetype = "Electricity"), size = 1) +
+    geom_line(aes(y = gas_price, linetype = "Natural Gas"), size = 1) +
+    facet_wrap(~country, scales = "free_y") +
+    theme_minimal() +
+    labs(
+      title = "Historical Energy Prices (2005-2022)",
+      subtitle = "By Country cent per kwH",
+      y = "Price",
+      color = "Country",
+      linetype = "Energy Type",
+      caption = "Sources: US - EIA, Germany - Destatis, UK - data.uk"
+    ) +
+    scale_color_manual(values = c("US" = "blue", "DEU" = "red", "UK" = "green")) +
+    theme(
+      legend.position = "bottom",
+      strip.text = element_text(size = 12, face = "bold")
+    )
+}
+
+# Function to print data summary with source documentation
+print_summary <- function(data) {
+  for (country_name in unique(data$country)) {
+    country_data <- data %>% 
+      filter(country == country_name, !is.na(elec_price))
+    
+    if (nrow(country_data) > 0) {
+      cat(sprintf("\nSummary for %s:\n", country_name))
+      print(summary(country_data[c("elec_price", "gas_price")]))
+      cat("Data source: ", switch(country_name,
+                                "US" = "EIA Average Retail Prices",
+                                "DEU" = "[Add German source]",
+                                "UK" = "[Add UK source]"),
+          "\n")
+    }
+  }
+}
+
+historical_prices <- bind_rows(us_prices, deu_prices, uk_prices)
+price_plot <- create_price_plot(historical_prices)
+print_summary(historical_prices)
+print(price_plot)
+```
+
+Now that we have average historical costs, I can convert the amount spent to consumption at decile level. 
+```{r consumption creation, echo=FALSE}
+
+energy_US <- US %>%
+  group_by(year, decile) %>%
+  summarise(
+    avg_elec_exp = mean(elec_a_exp, na.rm = TRUE),
+    avg_gas_exp = mean(gas_a_exp, na.rm = TRUE),
+    n = n()
+  ) %>%
+  arrange(year, decile) %>%
+  mutate(country = "US")
+
+energy_UK <- UK %>%
+  group_by(year, decile) %>%
+  summarise(
+    avg_elec_exp = mean(xpelecy, na.rm = TRUE),
+    avg_gas_exp = mean(xpgasy, na.rm = TRUE),
+    n = n()
+  ) %>%
+  arrange(year, decile)
+
+Germany <- DEU %>%
+  mutate(hgheat = ifelse(hgheat < 0, NA, hgheat)) 
+energy_DEU <- Germany %>%
+  group_by(year, decile) %>%
+  summarise(
+    avg_elec_exp = 12 * mean(hgelectr, na.rm = TRUE),
+    avg_gas_exp = 12 * mean(hgheat, na.rm = TRUE),
+    n = n()
+  ) %>%
+  arrange(year, decile)
+
+### exchange rate for Germany and UK 
+getSymbols("DEXUSEU", src = "FRED")
+exchange_rate_data <- data.frame(date = index(DEXUSEU), rate = as.numeric(DEXUSEU[, 1]))
+exchange_rate_data$year <- format(exchange_rate_data$date, "%Y")
+avg_exchange_rate <- exchange_rate_data %>%
+  group_by(year) %>%
+  summarise(avg_rate = mean(rate, na.rm = TRUE))
+
+avg_exchange_rate$year <- as.numeric(avg_exchange_rate$year)
+
+
+
+energy_DEU <- energy_DEU %>%
+  left_join(avg_exchange_rate, by = "year") %>%
+  mutate(
+    avg_elec_exp_usd = avg_elec_exp * avg_rate,  # Convert to USD
+    avg_gas_exp_usd = avg_gas_exp * avg_rate      # Convert to USD
+  )
+
+getSymbols("DEXUSUK", src = "FRED")
+exchange_rate_data <- data.frame(date = index(DEXUSUK), rate = as.numeric(DEXUSUK[, 1]))
+exchange_rate_data$year <- format(exchange_rate_data$date, "%Y")
+avg_exchange_rate <- exchange_rate_data %>%
+  group_by(year) %>%
+  summarise(avg_rate = mean(rate, na.rm = TRUE))
+avg_exchange_rate$year <- as.numeric(avg_exchange_rate$year)
+
+# combine
+
+energy_UK <- energy_UK %>%
+  left_join(avg_exchange_rate, by = "year") %>%
+  mutate(
+    avg_elec_exp_usd = avg_elec_exp * avg_rate,  # Convert to USD
+    avg_gas_exp_usd = avg_gas_exp * avg_rate      # Convert to USD
+  )
+
+
+energy_DEU_2 <- energy_DEU %>%
+  dplyr::select(year, decile, avg_elec_exp_usd, avg_gas_exp_usd) %>%
+  rename(
+    avg_elec_exp = avg_elec_exp_usd,  
+    avg_gas_exp = avg_gas_exp_usd
+  ) %>%
+  mutate(country = "DEU")
+
+energy_UK_2 <- energy_UK %>%
+  dplyr::select(year, decile, avg_elec_exp_usd, avg_gas_exp_usd) %>%
+  rename(
+    avg_elec_exp = avg_elec_exp_usd,  
+    avg_gas_exp = avg_gas_exp_usd
+  ) %>%
+  mutate(country = "UK")
+
+energy_combined <- bind_rows(energy_DEU_2, energy_US, energy_UK_2) %>%
+  left_join(historical_prices, by = c("year", "country")) %>%
+  mutate(gas_consumption = avg_gas_exp / (gas_price/100),
+         elec_consumption = avg_elec_exp / (elec_price/100))
+
+
+energy_combined_long <- energy_combined %>%
+  pivot_longer(
+    cols = c(gas_consumption, elec_consumption),
+    names_to = "type",
+    values_to = "consumption"
+  )
+
+# Create the plot
+ggplot(energy_combined_long, aes(x = year, y = consumption, color = type)) +
+  geom_line(aes(group = interaction(type, decile))) +
+  facet_grid(country ~ decile, scales = "free_y") +
+  theme_minimal() +
+  labs(
+    title = "Energy Consumption Over Time by Country and Decile",
+    y = "Consumption (kWh)",
+    x = "Year"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+energy_combined_long %>%
+  filter(country == "DEU") %>%
+  ggplot(aes(x = year, y = consumption, color = type)) +
+  geom_line(aes(group = interaction(type, decile))) +
+  facet_wrap(~decile, scales = "free_y") +
+  theme_minimal() +
+  labs(
+    title = "German Energy Consumption Over Time by Decile",
+    y = "Consumption (kWh)",
+    x = "Year"
+  )
+
+```
+### Technology model for electricity 
+
+```{r technology consumption, echo=FALSE}
+technology_consumption <- data.frame(
+  technology = c(
+    "Owns a Smartphone",     # Daily charging
+    "Hybrid/EV",            # EV charging
+    "Solar Panels",         # (negative consumption/production)
+    "Internet access",      # Router + devices
+    "Home Renovations",     # Efficiency improvements
+    "Digital Skills",       # Computer usage
+    "Clean Heating Switch", # Moving from gas to electric heating
+    "Sustainable Transport" # Public transport/biking
+  ),
+  kwh_per_year = c(
+    30,      # Smartphone: daily charging
+    2000,    # EV: annual charging for average use
+    -3000,   # Solar: annual production
+    180,     # Internet: router (~150 kWh) + device charging
+    -500,    # Home renovations: efficiency savings
+    250,     # Digital Skills: computer usage
+    3500,    # Moving from gas to electric heating (increases electricity use)
+    -200     # Sustainable transport: reduced car usage
+  )
+)
+
+print(technology_consumption)
+
+```
+
+```{r combine with forecast, echo=FALSE}
+
+elec_prices_2021 <- energy_combined %>%
+  filter(year == 2021) %>%
+  dplyr::select(country, elec_price) %>%
+  distinct() %>%
+  mutate(country = case_when(
+    country == "DEU" ~ "Germany",
+    TRUE ~ country
+  ))
+
+calculate_additional_demand <- function(forecasts_by_country, technology_consumption, elec_prices_2021) {
+  additional_demand <- list()
+  
+  for(country in names(forecasts_by_country)) {
+    cat("Processing country:", country, "\n")
+    country_forecasts <- forecasts_by_country[[country]]
+    
+    elec_price <- elec_prices_2021$elec_price[elec_prices_2021$country == country] / 100
+    
+    if(length(elec_price) == 0) {
+      cat("Warning: No electricity price found for", country, "\n")
+      next
+    }
+    
+    for(tech in names(country_forecasts)) {
+      cat("Processing technology:", tech, "\n")
+      tech_impact <- technology_consumption$kwh_per_year[technology_consumption$technology == tech]
+      
+      if(length(tech_impact) == 0) {
+        cat("Warning: No technology impact found for", tech, "\n")
+        next
+      }
+      
+      decile_forecasts <- country_forecasts[[tech]]
+      
+      for(decile_forecast in decile_forecasts) {
+        if(is.null(decile_forecast) || nrow(decile_forecast$predictions) == 0) next
+        
+        additional_cost <- decile_forecast$predictions %>%
+          mutate(
+            adoption_rate = predicted_adoption / 100,
+            additional_kwh = adoption_rate * tech_impact,
+            additional_cost = additional_kwh * elec_price,
+            technology = tech,
+            country = country
+          )
+        
+        additional_demand[[paste(country, tech, decile_forecast$predictions$decile[1])]] <- additional_cost
+      }
+    }
+  }
+  
+  result <- bind_rows(additional_demand)
+  cat("Final number of rows:", nrow(result), "\n")
+  return(result)
+}
+
+additional_demand <- calculate_additional_demand(forecasts_by_country, technology_consumption, elec_prices_2021)
+
+```
+Visualize the additional demand from technologies with our demand increase projections. 
+
+```{r visualize additional costs, echo=FALSE}
+
+# Create total_impact from additional_demand
+total_impact <- additional_demand %>%
+  filter(year >= 2021) %>%
+  group_by(year, country, decile) %>%
+  summarise(
+    total_additional_cost = sum(additional_cost),
+    .groups = 'drop'
+  )
+
+# Create a more informative plot
+ggplot(total_impact, 
+       aes(x = year, y = total_additional_cost, color = factor(decile))) +
+  geom_line() +
+  facet_wrap(~country, scales = "free_y") +
+  scale_y_continuous(labels = scales::dollar_format()) +
+  theme_minimal() +
+  labs(
+    title = "Net Change in Annual Electricity Costs from Technology Adoption",
+    subtitle = "Negative values indicate cost savings from solar generation and efficiency improvements",
+    y = "Net Change in Electricity Costs (USD)",
+    x = "Year",
+    color = "Income Decile"
+  ) +
+  theme(
+    legend.position = "bottom",
+    plot.subtitle = element_text(size = 10)
+  )
+
+# Let's also show the technology breakdown to better understand the components
+ggplot(additional_demand, 
+       aes(x = year, y = additional_cost, fill = technology)) +
+  geom_area(position = "stack") +
+  facet_wrap(~country, scales = "free_y") +
+  scale_y_continuous(labels = scales::dollar_format()) +
+  theme_minimal() +
+  labs(
+    title = "Components of Electricity Cost Changes",
+    subtitle = "Showing contribution of each technology to total cost change",
+    y = "Cost Impact (USD)",
+    x = "Year",
+    fill = "Technology"
+  ) +
+  theme(legend.position = "bottom")
+```
+
+#Step 4: Adoption S-curve impacts
+
+I now have estimates of how much these additional technologies would cost each decile to 2050. Now it is time to run a better forecast model that assumes earlier or later adoption trends of technologies. I want to look at how earlier or later adoption affects. 
+
+```{r fast and slow adoption, echo=FALSE}
+starting_values <- combined_growth %>%
+  group_by(technology, decile, country) %>%
+  slice_max(end_year, n = 1) %>%
+  dplyr::select(technology, decile, end_value, country, end_year)
+
+print("Checking starting values:")
+print(starting_values %>% arrange(technology, country, decile))
+
+
+# Enhanced s-curve function with decile variation
+create_adoption_curve <- function(
+  technology, 
+  decile,
+  country,
+  start_year = 2021,
+  end_year = 2050,
+  start_value,
+  scenario = "conservative",
+  max_adoption = NULL  # Will vary by technology and decile
+) {
+  
+  # Define maximum adoption rates by technology and decile
+  # Higher deciles generally have higher maximum adoption
+  base_max <- case_when(
+    technology == "Hybrid/EV" ~ 80,
+    technology == "Solar Panels" ~ 40,
+    technology == "Internet access" ~ 100,
+    technology == "Owns a Smartphone" ~ 100,
+    technology == "Digital Skills" ~ 90,
+    technology == "Clean Heating Switch" ~ 70,
+    technology == "Home Renovations" ~ 60,
+    technology == "Sustainable Transport" ~ 50,
+    TRUE ~ 100
+  )
+  
+  # Adjust max adoption by decile
+  decile_adjustment <- (decile - 5.5) * 5  # Deciles 1-10 get -22.5 to +22.5 adjustment
+  
+  # If max_adoption not specified, calculate it
+  if(is.null(max_adoption)) {
+    max_adoption <- min(100, base_max + decile_adjustment)
+  }
+  
+  # Set growth rate and midpoint based on scenario
+  if(scenario == "aggressive") {
+    k <- 0.15 + (decile/100)  # Higher deciles adopt slightly faster
+    midpoint <- 2035 - (decile/10)  # Higher deciles reach midpoint earlier
+  } else {  # conservative
+    k <- 0.08 + (decile/200)
+    midpoint <- 2040 - (decile/20)
+  }
+  
+  # Generate years
+  years <- start_year:end_year
+  
+  # Ensure start_value doesn't exceed max_adoption
+  start_value <- min(start_value, max_adoption)
+  
+  # Calculate shift parameter to match start_value
+  shift <- -log((max_adoption/start_value) - 1) / k
+  
+  # Calculate adoption for each year
+  adoption <- tibble(
+    year = years,
+    adoption = max_adoption / (1 + exp(-k * (years - midpoint))),
+    decile = decile,
+    technology = technology,
+    country = country,
+    scenario = scenario
+  )
+  
+  return(adoption)
+}
+
+# Generate curves for all technologies and deciles
+adoption_curves <- map_dfr(
+  1:nrow(starting_values),
+  function(i) {
+    row <- starting_values[i,]
+    
+    # Generate both conservative and aggressive scenarios
+    bind_rows(
+      create_adoption_curve(
+        technology = row$technology,
+        decile = row$decile,
+        country = row$country,
+        start_value = row$end_value,
+        scenario = "conservative"
+      ),
+      create_adoption_curve(
+        technology = row$technology,
+        decile = row$decile,
+        country = row$country,
+        start_value = row$end_value,
+        scenario = "aggressive"
+      )
+    )
+  }
+)
+
+ggplot(adoption_curves, 
+       aes(x = year, y = adoption, color = factor(decile))) +
+  geom_line() +
+  facet_grid(country + scenario ~ technology) +  # Added country to faceting
+  theme_minimal() +
+  labs(
+    title = "Technology Adoption Curves by Income Decile and Country",
+    subtitle = "Comparing Conservative vs Aggressive Scenarios",
+    y = "Adoption Rate (%)",
+    x = "Year",
+    color = "Income Decile"
+  ) +
+  theme(legend.position = "bottom")
+
+ggplot(
+  adoption_curves %>% filter(country == "UK"),
+  aes(x = year, y = adoption, color = factor(decile))
+) +
+  geom_line() +
+  facet_grid(scenario ~ technology) +
+  theme_minimal() +
+  labs(
+    title = "UK Technology Adoption Curves by Income Decile",
+    subtitle = "Comparing Conservative vs Aggressive Scenarios",
+    y = "Adoption Rate (%)",
+    x = "Year",
+    color = "Income Decile"
+  ) +
+  theme(legend.position = "bottom")
+
+# You might also want to see just one technology to compare scenarios more clearly
+ggplot(
+  adoption_curves %>% filter(technology == "Hybrid/EV"),
+  aes(x = year, y = adoption, color = factor(decile))
+) +
+  geom_line() +
+  facet_wrap(~scenario) +
+  theme_minimal() +
+  labs(
+    title = "EV Adoption Curves by Income Decile",
+    subtitle = "Comparing Conservative vs Aggressive Scenarios",
+    y = "Adoption Rate (%)",
+    x = "Year",
+    color = "Income Decile"
+  )
+
+```
+```{r additional costs, echo=FALSE}
+# First, let's confirm our kwh impacts from technology_consumption
+print(technology_consumption)
+
+# Calculate additional demand with new adoption curves
+new_additional_demand <- adoption_curves %>%
+  # Join with technology consumption assumptions
+  left_join(technology_consumption, by = "technology") %>%
+  # Join with electricity prices (using 2021 prices)
+  left_join(elec_prices_2021, by = "country") %>%
+  # Drop year.y and rename year.x to year
+  dplyr::select(-year.y) %>%
+  rename(year = year.x) %>%
+  # Calculate costs
+  mutate(
+    adoption_rate = adoption / 100,  # Convert percentage to decimal
+    additional_kwh = adoption_rate * kwh_per_year,
+    additional_cost = additional_kwh * (elec_price/100)  # Convert cents to dollars
+  )
+
+# Calculate total impact by scenario
+new_total_impact <- new_additional_demand %>%
+  group_by(year, country, decile, scenario) %>%
+  summarise(
+    total_additional_cost = sum(additional_cost),
+    .groups = 'drop'
+  )
+
+# Visualize the new projections
+ggplot(new_total_impact, 
+       aes(x = year, y = total_additional_cost, color = factor(decile))) +
+  geom_line() +
+  facet_grid(scenario ~ country, scales = "free_y") +
+  scale_y_continuous(labels = scales::dollar_format()) +
+  theme_minimal() +
+  labs(
+    title = "Projected Additional Annual Electricity Costs with New Adoption Curves",
+    subtitle = "By country and adoption scenario",
+    y = "Net Change in Electricity Costs (USD)",
+    x = "Year",
+    color = "Income Decile"
+  ) +
+  theme(legend.position = "bottom")
+
+```
+
+Questions for Charlie: do we want to add technology specific s-curves ? Right now they are general. technology specific would look more like this: 
+
+```{r technology specific s-curve, echo=FALSE}
+create_adoption_curve <- function(
+  technology, 
+  decile,
+  country,
+  start_year = 2021,
+  end_year = 2050,
+  start_value,
+  scenario = "conservative"
+) {
+  
+  # Technology-specific parameters
+  tech_params <- list(
+    "Hybrid/EV" = list(
+      base_max = 80,
+      aggressive_k = 0.20,
+      conservative_k = 0.10,
+      aggressive_midpoint = 2033,
+      conservative_midpoint = 2038
+    ),
+    "Solar Panels" = list(
+      base_max = 40,
+      aggressive_k = 0.15,
+      conservative_k = 0.08,
+      aggressive_midpoint = 2035,
+      conservative_midpoint = 2040
+    ),
+    "Internet access" = list(
+      base_max = 100,
+      aggressive_k = 0.25,  # Fast adoption
+      conservative_k = 0.15,
+      aggressive_midpoint = 2030,
+      conservative_midpoint = 2035
+    ),
+    "Owns a Smartphone" = list(
+      base_max = 100,
+      aggressive_k = 0.25,  # Fast adoption
+      conservative_k = 0.15,
+      aggressive_midpoint = 2030,
+      conservative_midpoint = 2035
+    ),
+    "Digital Skills" = list(
+      base_max = 90,
+      aggressive_k = 0.18,
+      conservative_k = 0.12,
+      aggressive_midpoint = 2032,
+      conservative_midpoint = 2037
+    ),
+    "Clean Heating Switch" = list(
+      base_max = 70,
+      aggressive_k = 0.15,
+      conservative_k = 0.08,
+      aggressive_midpoint = 2035,
+      conservative_midpoint = 2040
+    ),
+    "Home Renovations" = list(
+      base_max = 60,
+      aggressive_k = 0.12,
+      conservative_k = 0.06,
+      aggressive_midpoint = 2037,
+      conservative_midpoint = 2042
+    ),
+    "Sustainable Transport" = list(
+      base_max = 50,
+      aggressive_k = 0.15,
+      conservative_k = 0.08,
+      aggressive_midpoint = 2035,
+      conservative_midpoint = 2040
+    )
+  )
+  
+  # Get parameters for this technology
+  params <- tech_params[[technology]]
+  
+  # Adjust max adoption by decile
+  decile_adjustment <- (decile - 5.5) * 5  # Deciles 1-10 get -22.5 to +22.5 adjustment
+  max_adoption <- min(100, params$base_max + decile_adjustment)
+  
+  # Set growth rate and midpoint based on scenario
+  if(scenario == "aggressive") {
+    k <- params$aggressive_k + (decile/100)
+    midpoint <- params$aggressive_midpoint - (decile/10)
+  } else {
+    k <- params$conservative_k + (decile/200)
+    midpoint <- params$conservative_midpoint - (decile/20)
+  }
+  
+  # Generate years
+  years <- start_year:end_year
+  
+  # Ensure start_value doesn't exceed max_adoption
+  start_value <- min(start_value, max_adoption)
+  
+  # Calculate adoption for each year
+  adoption <- tibble(
+    year = years,
+    adoption = max_adoption / (1 + exp(-k * (years - midpoint))),
+    decile = decile,
+    technology = technology,
+    country = country,
+    scenario = scenario
+  )
+  
+  return(adoption)
+}
+
+# UK visualization
+ggplot(adoption_curves %>% filter(country == "UK"), 
+       aes(x = year, y = adoption, color = factor(decile))) +
+  geom_line() +
+  facet_grid(scenario ~ technology, scales = "free_y") +
+  theme_minimal() +
+  labs(
+    title = "UK Technology Adoption Curves by Income Decile",
+    subtitle = "Comparing Conservative vs Aggressive Scenarios",
+    y = "Adoption Rate (%)",
+    x = "Year",
+    color = "Income Decile"
+  ) +
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+# US visualization
+ggplot(adoption_curves %>% filter(country == "US"), 
+       aes(x = year, y = adoption, color = factor(decile))) +
+  geom_line() +
+  facet_grid(scenario ~ technology, scales = "free_y") +
+  theme_minimal() +
+  labs(
+    title = "US Technology Adoption Curves by Income Decile",
+    subtitle = "Comparing Conservative vs Aggressive Scenarios",
+    y = "Adoption Rate (%)",
+    x = "Year",
+    color = "Income Decile"
+  ) +
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+# Germany visualization
+ggplot(adoption_curves %>% filter(country == "Germany"), 
+       aes(x = year, y = adoption, color = factor(decile))) +
+  geom_line() +
+  facet_grid(scenario ~ technology, scales = "free_y") +
+  theme_minimal() +
+  labs(
+    title = "Germany Technology Adoption Curves by Income Decile",
+    subtitle = "Comparing Conservative vs Aggressive Scenarios",
+    y = "Adoption Rate (%)",
+    x = "Year",
+    color = "Income Decile"
+  ) +
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
