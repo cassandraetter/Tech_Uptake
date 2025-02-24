@@ -14,53 +14,105 @@ This is the data behind the EDITS work. It follows four steps. For Step 1 I look
 8 technologies selected are :Internet Access, own a smartphone, Home has Solar, Home switched from Gas/Coal/Wood to electric (fuel switching), Home renovation/ retrofitting, EV/ Hybrid car, Commuting habit (walking, biking), digital skills/ capabilities (daily use of internet).
 
 Note: Significant limitations on technologies surveyed. With better data, I could also do this for smart-meters, air conditioners, etc.
-
+# Load Lbraries
 ```{r libraries,include=FALSE}
-library(DiagrammeR)
-library(ggplot2)
-library(dplyr)
-library(tidyr)
-library(survey)
-library(priceR)
-library(readr)
-library(tidyverse)
-library(nls2)
-library(drc)
-library(forecast)
-library(nls2)
-library(quantmod)
-library(scales)
-library(data.table)
-library(minpack.lm)
-library(countrycode)
-library(modelsummary)
-library(knitr)
-library(kableExtra)
-library(broom)
-```
+if (!require(pacman)) install.packages("pacman")
 
+pacman::p_load(
+  # Data Manipulation
+  dplyr,          # Data manipulation
+  tidyr,          # Data tidying
+  data.table,     # Fast data manipulation
+  readr,          # Efficient data reading
+  
+  # Visualization
+  ggplot2,        # Core plotting
+  scales,         # Scale adjustments
+  
+  # Statistical Analysis
+  survey,         # Survey data analysis
+  nls2,           # Non-linear least squares
+  minpack.lm,     # More robust non-linear fitting
+  forecast,       # Time series forecasting
+  
+  # Utility
+  knitr,          # Dynamic report generation
+  kableExtra,     # Enhanced table generation
+  broom,          # Tidy model outputs
+  countrycode,    # Country code conversions
+  
+  # Optional / Specialized
+  priceR,         # Price-related utilities
+  quantmod,       # Financial time series
+  modelsummary,   # Model summary tables
+  
+  # Install if not already present
+  install = TRUE,
+  # Update packages
+  update = FALSE
+)
+sapply(c("dplyr", "ggplot2", "tidyr"), packageVersion)
+```
+```{r setup, include=FALSE}
+# Require specific R version
+if (getRversion() < "4.1.0") {
+  stop("This script requires R version 4.1.0 or higher")
+}
+
+# Set global knitr options
+knitr::opts_chunk$set(
+  echo = TRUE,           # Show code chunks
+  warning = FALSE,       # Hide warnings
+  message = FALSE,       # Hide messages
+  error = FALSE,         # Stop on errors
+  cache = TRUE,          # Cache code chunk results
+  fig.width = 10,        # Default figure width
+  fig.height = 6,        # Default figure height
+  dpi = 300              # High-resolution figures
+)
+
+# Set seed for reproducibility
+set.seed(2024)
+```
 
 ```{r load UK DEU, include=FALSE}
 
 UK <- read_csv("~/Documents/Github/PhD/Data/UK_Clean.csv")
-DEU <- read_csv("~/Documents/Github/PhD/Data/DEU_Clean.csv", show_col_types = FALSE)
-US <- read_csv("~/Documents/Github/PhD/Data/US_EDITS.csv", show_col_types = FALSE)
-
-
+DEU <- read_csv("~/Documents/Github/PhD/Data/DEU_Clean.csv", show_col_types = FALSE, na = "NA")
+US <- read_csv("~/Documents/Github/PhD/Data/US_Clean.csv", show_col_types = FALSE, na = "NA")
 ```
 ## Income Minimum Threshold ### 
-For our data, we have a number of households that state they make way below a ''living salary''. To calculate the floor, I make a grand assumption that at least one individual in the home is working full time on minimum wage salary. For the US, this amount doesn't change and is $1,150 net per month, or 13,800 per year. For Germany €8.50 in 2015 €8.84 in 2017 and €9.19 in 2019.
+For our data, we have a number of households that state they make way below a ''living salary''. To calculate the floor, I make a grand assumption that at least one individual in the home is working full time on minimum wage salary (or benefits which is included in income). 
 
-This eliminates 105 observations. 
+If the country has a strong benefits system (DEU), I take whatever the minimum-income benefits expenditure is (20% of average wage) which is the average benefits you'd receive from government. this is EUR695 per month in 2010. The standard benefit in 2010 was 345 euro per month, or 4140 EUR a year.
+Germany minimum wage was introduced in 2015 and was €8.50, €8.84 in 2017 and €9.19 in 2019, thus it is 695 for 2010 - 2015, then 1,360 in 2015. To error on the side of caution, I keep it flat at 695 EUR per month or 8340 per year. 
+
+For the US, federal income minimum wage amount doesn't change and is $1,150 net per month, or 13,800 per year. If they are single hh benefits, the maximum federal benefit is USD 901 per month or 10816 per year and there is no minimum, but lowest benefits would be around 292 a month (children of disabled workers in 2010). For long-term low earners there is also the special minimum benefit of SSI, which is 170 per month. To be cautious, I make the floor the benefits amount. This is 2040 a year. 
+
+
+For UK federal minimum is £5.05 in 2005 and rises to £10 over 18 in 2025, which net is 9,696 a year. Benefits (universal credit starting in 2012) is GBP 2,847 per year (1517 single on universal). I take universal credit to error on the side of caution.
+
+To measure benefits, I use OECD 2010 publication on minimum income benefits in OECD countries <https://www.oecd.org/content/dam/oecd/en/publications/reports/2010/01/minimum-income-benefits-in-oecd-countries_g17a1d77/218402763872.pdf>. 
+
+This eliminates 150 observations from US, no observations from the UK, and 38 observations from DEU. 
 
 ```{r income minimum, echo = FALSE}
 
-US_filter<- US %>%
-  filter(hh_income >= 1150) %>%
-  filter(adjusted_income >= 1150)
+US<- US %>%
+  filter(hh_income >= 2040) %>%
+  filter(adjusted_income >= 2040)
+
+UK <- UK %>%
+  filter(hh_incomey >= 1517) %>%
+  filter(adjusted_income >= 1517)
+
+DEU <- DEU %>%
+  filter(hh_incomey >= 4140) %>%
+  filter(adjusted_income >= 4140)
+  
 ```
 
-## Step 1: Uptake Rates
+# Step 1: Uptake Rates
 
 This provides a snapshot for current uptake across the households assessing heterogeneity across income level.
 
@@ -193,7 +245,7 @@ ggplot(us_props_long, aes(x = year, y = percentage, color = technology)) +
   facet_wrap(~weighted_decile) +
   theme_minimal() +
   labs(
-    title = "Technology Adoption Over Time by Income Decile",
+    title = "US Technology Adoption Over Time by Income Decile",
     x = "Year",
     y = "Percentage of Households (%)",
     color = "Technology"
@@ -204,6 +256,9 @@ ggplot(us_props_long, aes(x = year, y = percentage, color = technology)) +
     panel.grid.minor = element_blank()
   ) +
   guides(color = guide_legend(nrow = 2))
+
+ggsave("~/Documents/GitHub/EDITS/Output/us_adoption.png")
+
 ```
 
 Clean heating is interesting in that high income households had less electric only and marginally increased over 2011 - 2021 time period, though they still did increase within decile 9 and 10. Solar panel infiltration is lower than national average at 1% with EIA estimating 4%.
@@ -318,6 +373,7 @@ ggplot(uk_props_long[uk_props_long$percentage != 0, ], aes(x = year, y = percent
   ) +
   guides(color = guide_legend(nrow = 2))
 
+ggsave("~/Documents/GitHub/EDITS/Output/uk_adoption.png")
 
 
 ```
@@ -342,11 +398,12 @@ deu_props <- DEU %>%
   group_by(year, weighted_decile) %>%
   summarise(
     n_total = n(),
-    hybrid_prop = ifelse(sum(!is.na(c(hli0121, hli0122, hli0123, hli0124, hli0128, hli0129, hli0130, hli0131))) == 0, 
-                     NA_real_, 
-                     sum(hli0121 == 1 | hli0122 == 1 | hli0123 == 1 | hli0124 == 1 | 
-                         hli0128 == 1 | hli0129 == 1 | hli0130 == 1 | hli0131 == 1, 
-                         na.rm = TRUE) / n()),
+    hybrid_prop = ifelse(sum(!is.na(c(hli0121, hli0122, hli0123, hli0124, hli0128, hli0129, hli0130, hli0131))) == 0,
+                     NA_real_,
+                     mean(rowSums(data.frame(hli0121 == 1, hli0122 == 1, hli0123 == 1, hli0124 == 1,
+                                           hli0128 == 1, hli0129 == 1, hli0130 == 1, hli0131 == 1), 
+                                na.rm = TRUE) > 0, 
+                         na.rm = TRUE)),
     solar_prop = sum(hgeqpsol == 1 | hgeqpnrj == 1 , na.rm = TRUE) / 
              sum(hgeqpsol %in% c(1, 2) | hgeqpnrj %in% c(1, 2), na.rm = TRUE),
     renovation_prop = sum(hgcondit == 2 | hgcondit == 3, na.rm = TRUE) /n(),
@@ -403,7 +460,15 @@ ggplot(deu_props_long, aes(x = weighted_decile, y = percentage, color = technolo
   scale_x_continuous(breaks = 1:10) +
   theme(legend.position = "bottom")
 
-ggplot(deu_props_long, aes(x = year, y = percentage, color = technology)) +
+# Remove NA values from the dataset
+deu_props_long_clean <- deu_props_long %>%
+  filter(!is.na(percentage)) 
+      #filter(!(technology == "Hybrid/EV"),
+           #!(technology == "Home Renovations" & year == 2019))
+  
+
+# Then create the plot
+ggplot(deu_props_long_clean, aes(x = year, y = percentage, color = technology, group = technology)) +
   geom_line() +
   geom_point() +
   facet_wrap(~weighted_decile) +
@@ -422,6 +487,7 @@ ggplot(deu_props_long, aes(x = year, y = percentage, color = technology)) +
   guides(color = guide_legend(nrow = 2))
 
 
+ggsave("~/Documents/GitHub/EDITS/Output/de_adoption.png")
 
 ```
 
@@ -586,9 +652,10 @@ boxplot_all
 There are two outlier technologies for uptake rates. The first is Sustainable Transit in the UK. UK commute (sustainable transport) only shows commuting patterns for those who work, so potentially hides significant commuting preferences, particularly for those out of work or job seeking and is being compared against COVID so less people were commuting to work in 2021, no matter their method. The second is home renovations in Germany. If i change the year to later, the figure does go up, but 2010 shows a renovation boom that is lost in later years.
 
 
-### S-Curve - summary data
+# Step 2: Projections with S-Curve
 
-Simple Non linear Regression 
+### Version 1 - Simple
+Simple Non linear Regression. Q1-5 and goes to 2100. 
 ```{r s-curve, echo=FALSE}
 # Configure maximum penetration hypothesis
 max_penetration <- tribble(
@@ -604,7 +671,7 @@ max_penetration <- tribble(
 ) %>% as.data.table
 
 # Aggregate all 3 countries to the quintile level,
-# and combine them to a single data.table
+
 props_long <- bind_rows(
   deu_props %>% mutate(iso2 = "DE") ,
   uk_props  %>% mutate(iso2 = "GB"),
@@ -646,6 +713,7 @@ nlsTechnology <- function(dt, max_penetration, growth_rate, inflexion_year) {
                       control = nls.lm.control(maxfev = 4000, maxiter = 1024)
     )
 }
+
 
 # Market penetration fits across all countries, technologies and quintiles
 tech_penetration_fits <- sapply(unique(props_long$iso2) %>% sort, function(.iso2) {
@@ -711,6 +779,7 @@ tech_penetration_fits[['US']] %>% `names<-`(str_c("Quintile ", 1:5)) %>%
 
 ```
 
+### Version 2 - Country and Technology Specifics
 In the baseline model  Model aims to reach exogenously government provided diffusion target for each technology (e.g.40% for housing retrofit vs 60% for EVs) in each country. Desk research to find target. 
 
 General findings: Digital technologies (internet and smartphone) are earliest adopters and have highest penetration. Q5 generally leads adoption. Energy technologies are much later. Renovation has a very slow increase compared to technologies. 
@@ -727,6 +796,26 @@ commute --2030 Federal Infrastructure Plan lists expected growth to 2030 to be 2
 fuel switching-- 60% RE energy consumption across the board by 2050 in Buildings Strategy, Energieweshel has focus on heat pumps and district heating at 45% of all heating solutions
 renovation -- 1% annual to 2% annual in the Buildings Strategy so 45% renovation in 2019 would be 83.14% renovated in 2050
 
+UNITED STATES
+solar- EIA predicts 44% residential pv in 2050, but not official goal. 
+smartphones-- no specific target but say they want to be 100% by last year. 
+skills -- no specific law, but expect to have 90% of jobs needing digital skills in 2030. 
+internet-- IIJA has a universal broadband access goal. 
+hybrid-- have a ze sales goal for 2035, assuming current sharee of road, it would be around 75% in 2050. 
+commute-- IIJA expands public transit, but not federal goals. Given urban goals around 70-80% by 2050 and rural goals in the 40% range, selecting 50% overall. 
+fuel-switch-- No federal regulation or goal, but variety of states have goals on electrification that aveage to around 50% 
+renovation-- DOE and IRA have investment in retrofitting but no specific goals. State level interest is high so around 70% 
+
+UNITED KINGDOM
+solar- no clear number for residential, but 85GW goal for 2050. Based on today having 17.2GW and 30% of that being residential (1.4M hh), it would be about 20GW in 2050 and an increase of 34% for 10K hh. This figure would increase signficiantly if New Homes (solar generation bill) goes into force
+smartphones-- no specific target but say they want to be 100% already. 
+skills- Digital skills strategy has a 100% goal and Digital Future roadmap commits to enhancing digital skills for 95% of adulst, with no date assigned. 
+internet-- global broadband by 2030 target. 
+hybrid-- have a 100% new cars goal for 2035, assuming average lifespan of car and curernt hybrid infiltration, that would be around 85% in 2050
+commute-- Gear Change goal is 50% journeys to be walked or cycled in 2030. 
+fuel-switch--UK NZ and ECO obligations both look for NZ and heating upgrade starting in 2026, homes will be switchign at higher rate (70%) 
+renovation-- EEStrategy asks for 100% retrofitting, so likely around 80% in 2050. 
+
 ```{r s-curve improved, echo = FALSE}
 # Configure maximum penetration hypothesis
 max_penetration <- tribble(
@@ -738,26 +827,26 @@ max_penetration <- tribble(
         'DE', 'internet', 1.0,
         'DE', 'hybrid', 1.0,
         'DE', 'commute', 0.3,
-        'DE', 'fuel_switch', 0.45,
+        'DE', 'fuel_switch', 0.80,
         'DE', 'renovation', 0.83,
-        # US (using original values)
-        'US', 'solar', 0.9,
+        # US 
+        'US', 'solar', 0.44,
         'US', 'smartphone', 1.0,
-        'US', 'skills', 0.95,
+        'US', 'skills', 0.90,
         'US', 'internet', 1.0,
-        'US', 'hybrid', 0.5,
+        'US', 'hybrid', 0.75,
         'US', 'commute', 0.5,
         'US', 'fuel_switch', 0.7,
-        'US', 'renovation', 0.75,
-        # GB (using US values for now - you can modify these)
-        'GB', 'solar', 0.9,
+        'US', 'renovation', 0.70,
+        # GB 
+        'GB', 'solar', 0.34,
         'GB', 'smartphone', 1.0,
         'GB', 'skills', 0.95,
         'GB', 'internet', 1.0,
-        'GB', 'hybrid', 0.5,
+        'GB', 'hybrid', 0.85,
         'GB', 'commute', 0.5,
         'GB', 'fuel_switch', 0.7,
-        'GB', 'renovation', 0.75
+        'GB', 'renovation', 0.80
 ) %>% as.data.table
 
 # Aggregate all 3 countries to the quintile level,
@@ -929,6 +1018,7 @@ GB_table <- create_country_table(GB_summary, "United Kingdom")
 US_table <- create_country_table(US_summary, "United States")
 
 ```
+### Version 3 - Paper Version
 The one below I use for the paper. It removes hybrid in Germany and deals better with high saturation levels for smartphones. 
 ```{r s-curve take three, echo=FALSE}
 # Configure maximum penetration hypothesis
@@ -941,23 +1031,23 @@ max_penetration <- tribble(
         'DE', 'internet', 1.0,
         'DE', 'hybrid', 1.0,
         'DE', 'commute', 0.3,
-        'DE', 'fuel_switch', 0.45,
+        'DE', 'fuel_switch', 0.80,
         'DE', 'renovation', 0.83,
         # US 
-        'US', 'solar', 0.47,
+        'US', 'solar', 0.44,
         'US', 'smartphone', 1.0,
-        'US', 'skills', 1.0,
+        'US', 'skills', 0.90,
         'US', 'internet', 1.0,
-        'US', 'hybrid', 0.7,
+        'US', 'hybrid', 0.75,
         'US', 'commute', 0.5,
-        'US', 'fuel_switch', 1.0,
-        'US', 'renovation', 0.78,
+        'US', 'fuel_switch', 0.7,
+        'US', 'renovation', 0.70,
         # GB 
-        'GB', 'solar', 0.65,
+        'GB', 'solar', 0.34,
         'GB', 'smartphone', 1.0,
         'GB', 'skills', 0.95,
         'GB', 'internet', 1.0,
-        'GB', 'hybrid', 0.8,
+        'GB', 'hybrid', 0.85,
         'GB', 'commute', 0.5,
         'GB', 'fuel_switch', 0.7,
         'GB', 'renovation', 0.80
@@ -965,7 +1055,8 @@ max_penetration <- tribble(
 
 # Create filtered version of props_long without German hybrid
 props_long_filtered <- props_long %>%
-    filter(!(iso2 == "DE" & tech == "hybrid"))
+    filter(!(iso2 == "DE" & tech == "hybrid"),
+           ! (iso2 == "DE" & tech == "renovation" & year == 2019))
 
 # Function to obtain a fit for a particular iso2 x technology x quintile triplet
 nlsTechnology <- function(dt, max_penetration, growth_rate, inflexion_year) {
@@ -1133,6 +1224,70 @@ US_summary <- extract_nls_summary_robust(tech_penetration_fits[['US']])
 DE_table <- create_country_table(DE_summary, "Germany")
 GB_table <- create_country_table(GB_summary, "United Kingdom")
 US_table <- create_country_table(US_summary, "United States")
+
+## Regression tables
+tech_penetration_fits[['DE']] %>% `names<-`(str_c("Quintile ", 1:5)) %>%
+  modelsummary(stars = c('*' = 0.1, '**' = 0.05, '***' = 0.01),
+               shape = 'rbind',
+               output = "gt")%>%
+  gtsave("~/Documents/GitHub/EDITS/Output/tech_penetration_fits_DE.png")
+
+tech_penetration_fits[['GB']] %>% `names<-`(str_c("Quintile ", 1:5)) %>%
+  modelsummary(stars = c('*' = 0.1, '**' = 0.05, '***' = 0.01),
+               shape = 'rbind')
+
+tech_penetration_fits[['US']] %>% `names<-`(str_c("Quintile ", 1:5)) %>%
+  modelsummary(stars = c('*' = 0.1, '**' = 0.05, '***' = 0.01),
+               shape = 'rbind')
+
+### version for Overleaf 
+output_dir <- "~/Documents/GitHub/EDITS/Output/"
+
+# Generate PNG and .tex tables
+create_model_summary(tech_penetration_fits[['DE']], "Germany", file.path(output_dir, "tech_penetration_fits_DE.tex"))
+
+create_model_summary(tech_penetration_fits[['GB']], "United Kingdom", file.path(output_dir, "tech_penetration_fits_GB.tex"))
+
+create_model_summary(tech_penetration_fits[['US']], "United States", file.path(output_dir, "tech_penetration_fits_US.tex"))
+
+```
+
+```{r Latex version, echo=FALSE}
+# Generate regression tables
+create_model_summary <- function(models, country, output_path) {
+    models %>% 
+      `names<-`(str_c("Quintile ", 1:5)) %>%
+      modelsummary(
+        stars = c('*' = 0.1, '**' = 0.05, '***' = 0.01),
+        shape = 'rbind',
+        output = output_path,
+        booktabs = TRUE,
+        fmt = "%.3f",
+        table_format = "latex",
+        title = paste("Technology Adoption Parameters:", country),
+        gof_omit = 'AIC|BIC|Log|fin|Conv',  # Remove these statistics
+        coef_map = c(
+          "country_max" = "Maximum Penetration",
+          "growth_rate" = "Growth Rate",
+          "inflexion_year" = "Inflection Year"
+        ),
+        note = c("* p < 0.1, ** p < 0.05, *** p < 0.01"),
+        tex_wrap = c("begin{table}[!htbp]", "\\centering", "\\small", "\\end{table}"),
+        add_rows = NULL
+      )
+}
+
+# Germany
+create_model_summary(tech_penetration_fits[['DE']], "Germany", 
+                    file.path(output_dir, "tech_penetration_fits_DE.tex"))
+
+# UK
+create_model_summary(tech_penetration_fits[['GB']], "United Kingdom", 
+                    file.path(output_dir, "tech_penetration_fits_GB.tex"))
+
+# US
+create_model_summary(tech_penetration_fits[['US']], "United States", 
+                    file.path(output_dir, "tech_penetration_fits_US.tex"))
 
 ```
 
@@ -1760,7 +1915,7 @@ print(summary_table)
 
 Step 3 Estimate how distributional impacts of technology uptake affect final energy costs for household across time. Use survey data to estimate how final energy costs increase/decrease with different technologies including in a household (holding all other variables constant) in 2020. Then, hold energy prices static (very large assumption) to see how technology diffusion affects final energy costs for residential sector at decile level in 2050.
 
-I first get the average amount spent on energy, then roughly estimate how much is on gas vs electric, then get historical prices and convert amount spent to gas and eelctric to consumption. This is easier for some data (ex. US ) than others 
+I first get the average amount spent on energy, then roughly estimate how much is on gas vs electric, then get historical prices and convert amount spent to gas and eelctric to consumption. This is easier for some data (ex. US ) than others. 
 
 take a simple model to turn the technology into electricity 
 ```{r energy data, echo=FALSE}
@@ -1775,7 +1930,7 @@ us_prices <- tibble(
 
 
 
-# IEA USD/ KwH in PPP
+# IEA USD/ MWh in PPP
 deu_prices <- tibble(
   country = "DEU",
   year = 2011:2021,
@@ -1784,7 +1939,7 @@ deu_prices <- tibble(
 )
 
 
-# IEA Household EPT FD
+# IEA Household EPT FD USD/MWh in PPP
 uk_prices <- tibble(
   country = "UK",
   year = 2011:2021,
@@ -1863,8 +2018,8 @@ Now that we have average historical costs, I can convert the amount spent to con
 energy_US <- US %>%
   group_by(year, decile) %>%
   summarise(
-    avg_elec_exp = mean(elec_a_exp, na.rm = TRUE),
-    avg_gas_exp = mean(gas_a_exp, na.rm = TRUE),
+    avg_elec_exp = weighted.mean(elec_a_exp, weight, na.rm = TRUE),
+    avg_gas_exp = weighted.mean(gas_a_exp, weight, na.rm = TRUE),
     n = n()
   ) %>%
   arrange(year, decile) %>%
@@ -1873,22 +2028,39 @@ energy_US <- US %>%
 energy_UK <- UK %>%
   group_by(year, decile) %>%
   summarise(
-    avg_elec_exp = mean(xpelecy, na.rm = TRUE),
-    avg_gas_exp = mean(xpgasy, na.rm = TRUE),
+    avg_elec_exp = weighted.mean(xpelecy, weight, na.rm = TRUE),
+    avg_gas_exp = weighted.mean(xpgasy, weight, na.rm = TRUE),
     n = n()
   ) %>%
   arrange(year, decile)
+energy_DEU <- DEU %>%
+  group_by(year, weighted_decile) %>%
+  summarise(
+    average_elec_exp = weighted.mean(elec_a_exp, )
+  )
 
 energy_DEU <- DEU %>%
   mutate(hgheat = ifelse(hgheat < 0, NA, hgheat)) %>%
   group_by(year, decile) %>%
   filter(year != 2015) %>%
   summarise(
-    avg_elec_exp = 12 * mean(hgelectr, na.rm = TRUE),
+    avg_elec_exp = 12 * weighted.mean(hgelectr, weight, na.rm = TRUE),
+    avg_gas_exp = 12 * weighted.mean(hgheat, weight, na.rm = TRUE),
+    n = n()
+  ) %>%
+  arrange(year, decile)
+
+energy_DEU <- DEU %>%
+  mutate(hgheat = ifelse(hlf0084 < 0, NA, hgheat)) %>%
+  group_by(year, decile) %>%
+  filter(year != 2015) %>%
+  summarise(
+    avg_elec_exp = 12 * weightmean(hgelectr, na.rm = TRUE),
     avg_gas_exp = 12 * mean(hgheat, na.rm = TRUE),
     n = n()
   ) %>%
   arrange(year, decile)
+
 
 ### exchange rate for Germany and UK 
 # EUR/USD exchange rate for Germany

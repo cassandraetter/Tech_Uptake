@@ -1,0 +1,3773 @@
+---
+title: "Edits Notebook"
+author: "Cassandra Etter"
+date: "2024-11-15"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This is the data behind the EDITS work. It follows four steps. For Step 1 I look at uptake rates between 2010 and 2021 in three countries: US, UK and Germany. For the US, I use the PSID which tracks households between 2011- 2021 on a biannual basis. For Germany, I use SOEP which tracks households between 2010- 2021 on an annual basis, and for the UK I use Understanding Society which tracks households between 2010 - 2021 on an annual basis. All data was downloaded in September 2024 and cleaning files are on github.
+
+8 technologies selected are :Internet Access, own a smartphone, Home has Solar, Home switched from Gas/Coal/Wood to electric (fuel switching), Home renovation/ retrofitting, EV/ Hybrid car, Commuting habit (walking, biking), digital skills/ capabilities (daily use of internet).
+
+Note: Significant limitations on technologies surveyed. With better data, I could also do this for smart-meters, air conditioners, etc.
+# Load Lbraries
+```{r libraries,include=FALSE}
+
+if (!require(pacman)) install.packages("pacman")
+
+pacman::p_load(dplyr, tidyr,data.table, readr, purrr, ggplot2, scales, survey, nls2, minpack.lm,forecast, knitr, kableExtra, broom, countrycode, priceR, quantmod, modelsummary, kableExtra, stringr, tseries, boot,
+    install = TRUE,
+  update = FALSE
+)
+sapply(c("dplyr", "ggplot2", "tidyr"), packageVersion)
+```
+
+Set up environment
+
+```{r setup, include=FALSE}
+# Require specific R version
+if (getRversion() < "4.1.0") {
+  stop("This script requires R version 4.1.0 or higher")
+}
+
+# Set global knitr options
+knitr::opts_chunk$set(
+  echo = TRUE,           # Show code chunks
+  warning = FALSE,       # Hide warnings
+  message = FALSE,       # Hide messages
+  error = FALSE,         # Stop on errors
+  cache = TRUE,          # Cache code chunk results
+  fig.width = 10,        # Default figure width
+  fig.height = 6,        # Default figure height
+  dpi = 300              # High-resolution figures
+)
+
+# Set seed for reproducibility
+set.seed(2024)
+```
+
+```{r load UK DEU, include=FALSE}
+
+UK <- read_csv("~/Documents/Github/PhD/Data/UK_Clean.csv", show_col_types = FALSE)
+DEU <- read_csv("~/Documents/Github/PhD/Data/DEU_Clean.csv", show_col_types = FALSE, na = "NA")
+US <- read_csv("~/Documents/Github/PhD/Data/US_Clean.csv", show_col_types = FALSE, na = "NA")
+```
+## Income Minimum Threshold ### 
+For our data, we have a number of households that state they make way below a ''living salary''. To calculate the floor, I make a grand assumption that at least one individual in the home is working full time on minimum wage salary (or benefits which is included in income). 
+
+If the country has a strong benefits system (DEU), I take whatever the minimum-income benefits expenditure is (20% of average wage) which is the average benefits you'd receive from government. this is EUR695 per month in 2010. The standard benefit in 2010 was 345 euro per month, or 4140 EUR a year.
+Germany minimum wage was introduced in 2015 and was €8.50, €8.84 in 2017 and €9.19 in 2019, thus it is 695 for 2010 - 2015, then 1,360 in 2015. To error on the side of caution, I keep it flat at 695 EUR per month or 8340 per year. 
+
+For the US, federal income minimum wage amount doesn't change and is $1,150 net per month, or 13,800 per year. If they are single hh benefits, the maximum federal benefit is USD 901 per month or 10816 per year and there is no minimum, but lowest benefits would be around 292 a month (children of disabled workers in 2010). For long-term low earners there is also the special minimum benefit of SSI, which is 170 per month. To be cautious, I make the floor the benefits amount. This is 2040 a year. 
+
+
+For UK federal minimum is £5.05 in 2005 and rises to £10 over 18 in 2025, which net is 9,696 a year. Benefits (universal credit starting in 2012) is GBP 2,847 per year (1517 single on universal). I take universal credit to error on the side of caution.
+
+To measure benefits, I use OECD 2010 publication on minimum income benefits in OECD countries <https://www.oecd.org/content/dam/oecd/en/publications/reports/2010/01/minimum-income-benefits-in-oecd-countries_g17a1d77/218402763872.pdf>. 
+
+This eliminates 150 observations from US, no observations from the UK, and 38 observations from DEU. 
+
+```{r income minimum, echo = FALSE}
+
+US<- US %>%
+  filter(hh_income >= 2040) %>%
+  filter(adjusted_income >= 2040)
+
+UK <- UK %>%
+  filter(hh_incomey >= 1517) %>%
+  filter(adjusted_income >= 1517)
+
+DEU <- DEU %>%
+  filter(hh_incomey >= 4140) %>%
+  filter(adjusted_income >= 4140)
+  
+```
+
+# Step 1: Uptake Rates
+
+This provides a snapshot for current uptake across the households assessing heterogeneity across income level.
+
+### U.S. Uptake Rates
+
+For the US, I have information for solar ownership, EV/ hybrid ownership, smartphone ownership, internet access, and commute habit. I create an additional variable on fuel switching by looking at heating method and seeing where moved from wood, oil, gas, coal to electric heating. I also create a variable for retrofitting based on home renovations and skills based on survey responses where RP responds they use the internet daily.
+
+Note: Smartphone ownership and digital skills questions were only added to the survey in 2015.
+
+```{r US Uptake Rates, echo=FALSE}
+US <- US %>%
+  group_by(pid) %>%
+  arrange(pid, year) %>%
+  mutate(
+    # Create a combined solar indicator
+    is_solar = heat_method == 6 | heat_method_2 == 6 | heat_method_3 == 6,
+    
+    # Track those who switched to electric
+    switched_to_electric = (lag(heat_method) %in% c(1,3,4,5,10,11) |
+                    lag(heat_method_2) %in% c(1,3,4,5,10,11) |
+                    lag(heat_method_3) %in% c(1,3,4,5,10,11)) & 
+                          heat_method == 2,
+    
+    # Track those using electricity 
+    always_electric = all(heat_method == 2, na.rm = TRUE),
+        switched_to_solar = lag(is_solar) == FALSE & is_solar == TRUE,
+        always_solar = all(is_solar, na.rm = TRUE),
+        using_electric = heat_method == 2,
+    using_solar = is_solar,
+        switch_year_electric = case_when(
+      switched_to_electric ~ year,
+      TRUE ~ NA_real_
+    ),
+    switch_year_solar = case_when(
+      switched_to_solar ~ year,
+      TRUE ~ NA_real_
+    )
+  ) %>%
+  ungroup() %>%
+  filter(year > 2010)
+# For decile analysis:
+uptake_rates <- US %>%
+  group_by(year, weighted_decile) %>%
+  summarise(
+    total_households = n_distinct(pid),
+    
+    # Electric heating metrics
+    new_electric_switches = sum(switched_to_electric, na.rm = TRUE),
+    total_electric_users = sum(using_electric, na.rm = TRUE),
+    
+    # Solar heating metrics
+    new_solar_switches = sum(switched_to_solar, na.rm = TRUE),
+    total_solar_users = sum(using_solar, na.rm = TRUE),
+    
+    # Calculate rates
+    electric_switch_rate = (new_electric_switches / total_households) * 100,
+    total_electric_rate = (total_electric_users / total_households) * 100,
+    solar_switch_rate = (new_solar_switches / total_households) * 100,
+    total_solar_rate = (total_solar_users / total_households) * 100
+  ) %>%
+  ungroup()
+
+us_props <- US %>%
+  group_by(year, weighted_decile) %>%
+  summarise(
+    n_total = n(),
+    smartphone_prop = mean(smartphone == 1, na.rm = TRUE),
+    hybrid_prop = mean(hybrid == 1 | hybrid_2 == 1 | hybrid_3 == 1, na.rm = TRUE), # includes EVs 
+    solar_prop = mean(heat_method == 6 | heat_method_2 ==6 | heat_method_3 == 6, na.rm = TRUE),
+    internet_prop = mean(computer == 1, na.rm = TRUE),     # Computer ownership
+    renovation_prop = mean(hh_repair > 1, na.rm = TRUE), 
+    skills_prop = mean(internet == 1, na.rm = TRUE),       # Internet usage
+    fuel_switch_prop = mean(heat_method == 2 & 
+                                                (heat_method_2 == 0 | heat_method_2 == 2 | heat_method_2 == 6) &
+                                                (heat_method_3 == 0 | heat_method_3 == 2 | heat_method_3 == 6), 
+                                        na.rm = TRUE)
+  ) %>%
+  mutate(
+    smartphone_percent = smartphone_prop * 100,            # Remove duplicate line
+    hybrid_percent = hybrid_prop * 100,
+    solar_percent = solar_prop * 100, 
+    internet_percent = internet_prop * 100, 
+    repairs_percent = renovation_prop * 100, 
+    skills_percent = skills_prop * 100,
+    fuel_switch_percent = fuel_switch_prop * 100 
+  )
+
+
+us_props_long <- us_props %>%
+  dplyr::select(year, weighted_decile, smartphone_percent, hybrid_percent, solar_percent, 
+         internet_percent, repairs_percent, skills_percent, 
+         fuel_switch_percent) %>%
+  pivot_longer(
+    cols = c(smartphone_percent, hybrid_percent, solar_percent, 
+             internet_percent, repairs_percent, skills_percent, 
+             fuel_switch_percent),
+    names_to = "technology",
+    values_to = "percentage"
+  ) %>%
+  mutate(technology = factor(technology, 
+    levels = c("smartphone_percent", "hybrid_percent", "solar_percent", 
+               "internet_percent", "repairs_percent", "skills_percent", 
+               "fuel_switch_percent"),
+    labels = c("Smartphone", "Hybrid/EV", "Solar Panels", "Internet", 
+               "Home Renovations", "Digital Skills", "Clean Heating Switch")))
+# Create the plot
+ggplot(us_props_long, aes(x = weighted_decile, y = percentage, color = technology)) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~year) +
+  theme_minimal() +
+  labs(
+    title = "Technology Adoption by Income Decile in US",
+    x = "Income Decile",
+    y = "Percentage of Households (%)",
+    color = "Technology"
+  ) +
+  scale_x_continuous(breaks = 1:10) +
+  theme(
+    legend.position = "bottom",
+    legend.box = "vertical",
+    panel.grid.minor = element_blank()
+  ) +
+  guides(color = guide_legend(nrow = 2)) # Makes legend more compact
+
+# Plot across time
+ggplot(us_props_long, aes(x = year, y = percentage, color = technology)) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~weighted_decile) +
+  theme_minimal() +
+  labs(
+    title = "US Technology Adoption Over Time by Income Decile",
+    x = "Year",
+    y = "Percentage of Households (%)",
+    color = "Technology"
+  ) +
+  theme(
+    legend.position = "bottom",
+    legend.box = "vertical",
+    panel.grid.minor = element_blank()
+  ) +
+  guides(color = guide_legend(nrow = 2))
+
+ggsave("~/Documents/GitHub/EDITS/Output/us_adoption.png")
+
+```
+
+Clean heating is interesting in that high income households had less electric only and marginally increased over 2011 - 2021 time period, though they still did increase within decile 9 and 10. Solar panel infiltration is lower than national average at 1% with EIA estimating 4%.
+
+### U.K. Uptake Rates
+
+For the UK, I have solar, EV/ hybrid, smartphone, internet, commute and skills. I create fuel switching in the same manner as for US, buy looking at home energy bills and looking for those households that switch from gas/coal to electric only.
+
+Solar question is only asked in 2009, 2012, 2018, and 2021. EV is asked in 2012, 2015, 2018, and 2021. Smartphone begins in 2013. Skills starts in 2011.
+
+Commuting habit question changes in 2018 to a new question, so I only track to 2017. 
+
+```{r UK Uptake Rates, echo=FALSE}
+# UK proportions
+uk_props <- UK %>%
+  group_by(year, weighted_decile) %>%
+  summarise(
+    n_total = n(),
+    solar_prop = mean(solar1 %in% c("yes - fitted", "Yes - fitted") | 
+                        solar2 %in% c("yes - fitted", "Yes - fitted") |
+                        solar3 %in% c("yes - fitted", "Yes - fitted"), na.rm = TRUE),
+     hybrid_prop = mean(
+            carfuel1 %in% c("Electric / battery", "electric / battery", "Hybrid (petrol/electric)", "hybrid (petrol/electric)") |
+            carfuel2 %in% c("Electric / battery", "electric / battery", "Hybrid (petrol/electric)", "hybrid (petrol/electric)") | 
+              carfuel3 %in%  c("Electric / battery", "electric / battery", "Hybrid (petrol/electric)", "hybrid (petrol/electric)") |
+              carfuel4 %in%  c("Electric / battery", "electric / battery", "Hybrid (petrol/electric)", "hybrid (petrol/electric)"), na.rm = TRUE),
+    smartphone_prop = mean(smartmob %in% c("Yes", "yes"), na.rm = TRUE ),
+    skills_prop = mean(netpuse %in% c("Every day", "every day") | netpusenew %in% c("Every day", "every day"), na.rm = TRUE),
+    internet_prop = mean(pcnet %in% c("yes", "Yes"), na.rm = TRUE),
+     commute_prop = mean(
+                        case_when(
+                                year < 2018 ~ worktrav %in% c(
+                                        "Bus/coach", "bus/coach", "Cycle", "cycle", "Walk", "walk",
+                                        "Train", "train", "Underground/Metro/Tram/Light railway", 
+                                        "underground/metro/tram/light railway",
+                                        "underground/metro/tram/light railway (if england/scotland/wales)",
+                                        "underground/metro/tram/light railway {if region = gb}",
+                                        "Motorcycle/moped/scooter", "motorcycle/moped/scooter"
+                                ),
+                                year >= 2018 ~ (wktrv10 == "Yes mentioned" |  # Underground/metro
+                                                        wktrv6 == "Yes mentioned" |   # Bus
+                                                        wktrv7 == "Yes mentioned" |   # Train
+                                                        wktrv9 == "Yes mentioned" |   # Walk
+                                                        wktrv8 == "Yes mentioned")   # Cycle
+                        ),
+                        na.rm = TRUE
+                ),
+    fuel_switch_prop = mean(xpelecy > 0 & 
+                                                (xpgasy <= 0 | is.na(xpgasy)) & 
+                                                (xpoily <= 0 | is.na(xpoily)), 
+                                        na.rm = TRUE)) %>%
+  mutate(
+    solar_percent = solar_prop * 100,
+    ev_percent = hybrid_prop * 100,
+    smartphone_percent = smartphone_prop * 100, 
+    internet_percent = internet_prop * 100, 
+    commute_percent = commute_prop * 100,
+    skills_percent = skills_prop * 100, 
+    fuel_switch_percent = fuel_switch_prop * 100
+  )
+
+# Convert to long format with all technologies
+uk_props_long <- uk_props %>%
+  dplyr::select(year, weighted_decile, solar_percent, ev_percent, smartphone_percent, 
+         internet_percent, skills_percent, commute_percent, fuel_switch_percent) %>%
+  pivot_longer(
+    cols = c(solar_percent, ev_percent, smartphone_percent, 
+             internet_percent, skills_percent, commute_percent, fuel_switch_percent),
+    names_to = "technology",
+    values_to = "percentage"
+  ) %>%
+  mutate(technology = factor(technology, 
+    levels = c("ev_percent", "solar_percent", "smartphone_percent", 
+               "internet_percent", "skills_percent", "commute_percent", "fuel_switch_percent"),
+    labels = c("Hybrid/EV", "Solar Panels", "Smartphone", 
+               "Internet", "Digital Skills", "Sustainable Transport", "Clean Heating Switch")))
+
+ggplot(uk_props_long, aes(x = weighted_decile, y = percentage, color = technology)) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~year) +
+  theme_minimal() +
+  labs(
+    title = "Technology Adoption by Income Decile in UK",
+    x = "Income Decile",
+    y = "Percentage of Households (%)",
+    color = "Technology"
+  ) +
+  scale_x_continuous(breaks = 1:10) +
+  theme(
+    legend.position = "bottom",
+    legend.box = "vertical",
+    panel.grid.minor = element_blank()
+  ) +
+  guides(color = guide_legend(nrow = 2)) # Makes legend more compact
+
+ggplot(uk_props_long[uk_props_long$percentage != 0, ], aes(x = year, y = percentage, color = technology)) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~weighted_decile) +
+  theme_minimal() +
+  labs(
+    title = "Technology Adoption Over Time by Income Decile UK",
+    x = "Year",
+    y = "Percentage of Households (%)",
+    color = "Technology"
+  ) +
+  theme(
+    legend.position = "bottom",
+    legend.box = "vertical",
+    panel.grid.minor = element_blank()
+  ) +
+  guides(color = guide_legend(nrow = 2))
+
+ggsave("~/Documents/GitHub/EDITS/Output/uk_adoption.png")
+
+
+```
+
+### Germany Uptake Rates
+
+For Germany I have information on solar, EV, retrofitting, smartphone, internet.
+
+EV only exists in 2015 and 2020. (note it is full EV or hydrogen, no hybrid category). Remove this variable as 2015 only has 1 response per decile and 2020 isn't much better. 
+
+Retrofitting is asked from 2010 - 2015, and 2019. 
+
+Smartphone hits 100% adoption in 2016, and SOEP stop asking the question. 
+```{r rename syear, include=FALSE}
+DEU <- DEU %>%
+  rename(year = syear)
+```
+
+```{r DEU Uptake Rates, echo=FALSE}
+
+deu_props <- DEU %>%
+  group_by(year, weighted_decile) %>%
+  summarise(
+    n_total = n(),
+    hybrid_prop = ifelse(sum(!is.na(c(hli0121, hli0122, hli0123, hli0124, hli0128, hli0129, hli0130, hli0131))) == 0,
+                     NA_real_,
+                     mean(rowSums(data.frame(hli0121 == 1, hli0122 == 1, hli0123 == 1, hli0124 == 1,
+                                           hli0128 == 1, hli0129 == 1, hli0130 == 1, hli0131 == 1), 
+                                na.rm = TRUE) > 0, 
+                         na.rm = TRUE)),
+    solar_prop = sum(hgeqpsol == 1 | hgeqpnrj == 1 , na.rm = TRUE) / 
+             sum(hgeqpsol %in% c(1, 2) | hgeqpnrj %in% c(1, 2), na.rm = TRUE),
+    renovation_prop = sum(hgcondit == 2 | hgcondit == 3, na.rm = TRUE) /n(),
+    smartphone_prop = if(first(year) > 2015) {
+                        1
+                } else {
+                        sum(hgeqptel == 1, na.rm = TRUE) / n()
+                },
+    internet_prop = sum(hlf0178_h == 1, na.rm = TRUE) / 
+                  sum(hlf0178_h %in% c(1, 2), na.rm = TRUE),
+    fuel_switch_prop = if(first(year) >= 2016) {
+                        sum(energy_combination == 3, na.rm = TRUE) / n()
+                } else {
+                        NA_real_
+                }
+  ) %>%
+  group_by(weighted_decile) %>%
+  arrange(year) %>%
+  mutate(
+    internet_prop = if_else(year == 2020, NA_real_, internet_prop ) ## 2020 had different methodology in survey
+  ) %>%
+   mutate(
+    hybrid_percent = ifelse(hybrid_prop == 0, NA_real_, hybrid_prop * 100),
+    solar_percent = ifelse(solar_prop == 0, NA_real_, solar_prop * 100), 
+    renovation_percent = ifelse(renovation_prop == 0, NA_real_, renovation_prop * 100), 
+    smartphone_percent = ifelse(smartphone_prop == 0, NA_real_, smartphone_prop * 100),
+    internet_percent = ifelse(internet_prop == 0, NA_real_, internet_prop * 100),
+    fuel_switch_percent = ifelse(fuel_switch_prop == 0, NA_real_, fuel_switch_prop * 100)
+  )
+
+
+deu_props_long <- deu_props %>%
+  dplyr::select(year, solar_percent, renovation_percent, smartphone_percent, internet_percent, fuel_switch_percent, hybrid_percent) %>%  
+  pivot_longer(
+    cols = c( solar_percent, renovation_percent, smartphone_percent, internet_percent, fuel_switch_percent, hybrid_percent),
+    names_to = "technology",
+    values_to = "percentage"
+  ) %>%
+  mutate(technology = factor(technology, 
+    levels = c( "solar_percent", "renovation_percent", "smartphone_percent", "internet_percent", "fuel_switch_percent", "hybrid_percent"),
+    labels = c("Solar Panels", "Home Renovations", "Owns a Smartphone", "Internet access", "Clean Heating Switch", "Hybrid/EV")))
+
+ggplot(deu_props_long, aes(x = weighted_decile, y = percentage, color = technology)) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~year) +
+  theme_minimal() +
+  labs(
+    title = "Technology Adoption by Income Decile in Germany",
+    x = "Income Decile",
+    y = "Percentage of Households (%)",
+    color = "Technology"
+  ) +
+  scale_x_continuous(breaks = 1:10) +
+  theme(legend.position = "bottom")
+
+# Remove NA values from the dataset
+deu_props_long_clean <- deu_props_long %>%
+  filter(!is.na(percentage)) 
+      #filter(!(technology == "Hybrid/EV"),
+           #!(technology == "Home Renovations" & year == 2019))
+  
+
+# Then create the plot
+ggplot(deu_props_long_clean, aes(x = year, y = percentage, color = technology, group = technology)) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~weighted_decile) +
+  theme_minimal() +
+  labs(
+    title = "Technology Adoption Over Time by Income Decile Germany",
+    x = "Year",
+    y = "Percentage of Households (%)",
+    color = "Technology"
+  ) +
+  theme(
+    legend.position = "bottom",
+    legend.box = "vertical",
+    panel.grid.minor = element_blank()
+  ) +
+  guides(color = guide_legend(nrow = 2))
+
+
+ggsave("~/Documents/GitHub/EDITS/Output/de_adoption.png")
+
+```
+
+
+There are two outlier technologies for uptake rates. The first is Sustainable Transit in the UK. UK commute (sustainable transport) only shows commuting patterns for those who work, and because the other two countries don't have sustainable commute, its harder to look at comparisons. The second is home renovations in Germany. If i change the year to later, the figure does go up, but 2010 shows a renovation boom that is lost in later years.
+
+
+# Step 2: Projections with S-Curve
+
+### Version 1 - Simple
+Simple Non linear Regression. Q1-5 and goes to 2100. 
+```{r s-curve, include = FALSE}
+# Configure maximum penetration hypothesis
+max_penetration <- tribble(
+  ~tech, ~max_share,
+  'solar', 0.9,
+  'smartphone', 1,
+  'skills', 0.95,
+  'internet', 1,
+  'hybrid', 0.5,
+  'commute', 0.5,
+  'fuel_switch', 0.7,
+  'renovation', 0.75,
+) %>% as.data.table
+
+# Aggregate all 3 countries to the quintile level,
+
+props_long <- bind_rows(
+  deu_props %>% mutate(iso2 = "DE") ,
+  uk_props  %>% mutate(iso2 = "GB"),
+  us_props  %>% mutate(iso2 = "US") 
+) %>%
+  mutate(quintile = (weighted_decile - 1) %/% 2 + 1) %>% group_by(iso2, year, quintile) %>%
+  summarise(across(ends_with('prop'), ~weighted.mean(., n_total, na.rm = TRUE))) %>% as.data.table %>%
+  melt(id.vars = c('iso2', 'year', 'quintile'), value.name = 'share', variable.name = 'tech') %>%
+  mutate(tech = str_remove(tech, '_prop')) %>%
+  # The logistics curve will be fitted to non-zero, non-NA shares
+  filter(share != 0, !is.na(share),
+         # There's apparently a problem in the computation of the Commute share over 2018:2021 in the UK
+         !(year %in% 2018:2021 & tech == 'commute'),
+         # Not enough observations (2) for hybrids in Germany
+         !(iso2 == 'DE' & tech == 'hybrid'),
+         # Problem with solar in the US: only one observation for quintile 2
+         !(iso2 == 'US' & tech == 'solar')
+  )
+
+
+# Function to obtain a fit for a particular iso2 x technology x quintile triplet
+nlsTechnology <- function(dt, max_penetration, growth_rate, inflexion_year) {
+  .tech <- dt$tech[1]; .quintile <- dt$quintile[1]; .iso2 <- dt$iso2[1]
+
+  target_2100 <- tail(props_long[iso2 == .iso2 & quintile == .quintile & tech == .tech], 1)
+  target_2100$year <- 2100
+  target_2100$share <- max_penetration
+  dt <- rbindlist(list(dt, target_2100))
+
+  dt %>%
+    minpack.lm::nlsLM(share ~ max_penetration / (1 + exp(-growth_rate * (year - inflexion_year))), .,
+                      start = list(
+                        max_penetration = max_penetration,
+                        growth_rate = growth_rate,
+                        inflexion_year = inflexion_year
+                      ),
+                      lower = c('max_penetration' = 0, 'growth_rate' = 0, 'inflexion_year' = 1900),
+                      upper = c('max_penetration' = max_penetration, 'growth_rate' = 0.15, 'inflexion_year' = 2500),
+                      control = nls.lm.control(maxfev = 4000, maxiter = 1024)
+    )
+}
+
+
+# Market penetration fits across all countries, technologies and quintiles
+tech_penetration_fits <- sapply(unique(props_long$iso2) %>% sort, function(.iso2) {
+  print(.iso2)
+  lapply(unique(props_long[iso2 == .iso2]$quintile) %>% sort, function(.quintile) {
+    print(.quintile)
+    sapply(unique(props_long[iso2 == .iso2]$tech), function(.tech) {
+      print(.tech)
+      props_long[iso2 == .iso2 & quintile == .quintile & tech == .tech] %>%
+        nlsTechnology(
+          max_penetration = max(max_penetration[tech == .tech]$max_share,
+                                max(props_long[iso2 == .iso2 & quintile == .quintile & tech == .tech]$share)),
+          growth_rate = 0.1, inflexion_year = 2025
+        )
+    }, simplify = FALSE, USE.NAMES = TRUE)
+  })
+}, simplify = FALSE, USE.NAMES = TRUE)
+
+
+# Plot results for a given country
+plotCountry <- function(.iso2) {
+  lapply(unique(props_long[iso2 == .iso2]$tech), function(.tech) {
+    lapply(1:5, function(.quintile) {
+      data.table(year = 2000:2100, quintile = .quintile) %>%
+        mutate(predicted_share = predict(tech_penetration_fits[[.iso2]][[.quintile]][[.tech]],
+                                         newdata = list(year = year)),
+               tech = .tech)
+    }) %>% rbindlist
+  }) %>% rbindlist %>%
+    mutate(iso2 = .iso2) %>%
+    left_join(props_long, by = c('iso2', 'year', 'tech', 'quintile')) %>%
+    mutate(quintile = str_c('Q', quintile)) %>%
+    ggplot(aes(year, predicted_share, color = tech)) +
+    geom_line() +
+    geom_point(aes(year, share, color = tech), size = 1) +
+    facet_grid(vars(quintile), vars(tech), switch = "y") +
+    scale_y_continuous(labels = scales::label_percent()) +
+    scale_x_continuous(breaks = c(2000, 2050, 2100)) +
+    xlab('') + ylab('Penetration rate') +
+    ggtitle(countrycode(.iso2, 'iso2c', 'country.name')) +
+    theme_minimal() +
+    theme(legend.position = 'none',
+          text = element_text(size = 14))
+}
+
+plotCountry('DE')
+plotCountry('GB')
+plotCountry('US')
+
+## Regression tables
+tech_penetration_fits[['DE']] %>% `names<-`(str_c("Quintile ", 1:5)) %>%
+  modelsummary(stars = c('*' = 0.1, '**' = 0.05, '***' = 0.01),
+               shape = 'rbind')
+
+tech_penetration_fits[['GB']] %>% `names<-`(str_c("Quintile ", 1:5)) %>%
+  modelsummary(stars = c('*' = 0.1, '**' = 0.05, '***' = 0.01),
+               shape = 'rbind')
+
+tech_penetration_fits[['US']] %>% `names<-`(str_c("Quintile ", 1:5)) %>%
+  modelsummary(stars = c('*' = 0.1, '**' = 0.05, '***' = 0.01),
+               shape = 'rbind')
+
+
+```
+
+### Version 2 - Country and Technology Specifics
+In the baseline model  Model aims to reach exogenously government provided diffusion target for each technology (e.g.40% for housing retrofit vs 60% for EVs) in each country. Desk research to find target. 
+
+General findings: Digital technologies (internet and smartphone) are earliest adopters and have highest penetration. Q5 generally leads adoption. Energy technologies are much later. Renovation has a very slow increase compared to technologies. 
+
+Now, to improve with technology and country specific policies. 
+
+GERMANY
+Solar -- goal of 80-95% solar installation on homes by 2050
+Internat -- goal of 100% by 2030 in digitalstrategie deutschland
+smartphone --- Digitalstrategie Deutschland state 2030 everyone should have
+skills -- EU have a 80% by 2030 goal in EU Digital Decade Strategy
+hybrid/ev -- they have a 100% new sales goal, 
+commute --2030 Federal Infrastructure Plan lists expected growth to 2030 to be 20% increase  
+fuel switching-- 60% RE energy consumption across the board by 2050 in Buildings Strategy, Energieweshel has focus on heat pumps and district heating at 45% of all heating solutions
+renovation -- 1% annual to 2% annual in the Buildings Strategy so 45% renovation in 2019 would be 83.14% renovated in 2050
+
+UNITED STATES
+solar- EIA predicts 44% residential pv in 2050, but not official goal. 
+smartphones-- no specific target but say they want to be 100% by last year. 
+skills -- no specific law, but expect to have 90% of jobs needing digital skills in 2030. 
+internet-- IIJA has a universal broadband access goal. 
+hybrid-- have a ze sales goal for 2035, assuming current sharee of road, it would be around 75% in 2050. 
+commute-- IIJA expands public transit, but not federal goals. Given urban goals around 70-80% by 2050 and rural goals in the 40% range, selecting 50% overall. 
+fuel-switch-- No federal regulation or goal, but variety of states have goals on electrification that aveage to around 50% 
+renovation-- DOE and IRA have investment in retrofitting but no specific goals. State level interest is high so around 70% 
+
+UNITED KINGDOM
+solar- no clear number for residential, but 85GW goal for 2050. Based on today having 17.2GW and 30% of that being residential (1.4M hh), it would be about 20GW in 2050 and an increase of 34% for 10K hh. This figure would increase signficiantly if New Homes (solar generation bill) goes into force
+smartphones-- no specific target but say they want to be 100% already. 
+skills- Digital skills strategy has a 100% goal and Digital Future roadmap commits to enhancing digital skills for 95% of adulst, with no date assigned. 
+internet-- global broadband by 2030 target. 
+hybrid-- have a 100% new cars goal for 2035, assuming average lifespan of car and curernt hybrid infiltration, that would be around 85% in 2050
+commute-- Gear Change goal is 50% journeys to be walked or cycled in 2030. 
+fuel-switch--UK NZ and ECO obligations both look for NZ and heating upgrade starting in 2026, homes will be switchign at higher rate (70%) 
+renovation-- EEStrategy asks for 100% retrofitting, so likely around 80% in 2050. 
+
+```{r s-curve improved, include = FALSE}
+# Configure maximum penetration hypothesis
+max_penetration <- tribble(
+        ~iso2, ~tech, ~max_share,
+        # Germany
+        'DE', 'solar', 0.95,
+        'DE', 'smartphone', 1.0,
+        'DE', 'skills', 0.8,
+        'DE', 'internet', 1.0,
+        'DE', 'hybrid', 1.0,
+        'DE', 'commute', 0.3,
+        'DE', 'fuel_switch', 0.80,
+        'DE', 'renovation', 0.83,
+        # US 
+        'US', 'solar', 0.44,
+        'US', 'smartphone', 1.0,
+        'US', 'skills', 0.90,
+        'US', 'internet', 1.0,
+        'US', 'hybrid', 0.75,
+        'US', 'commute', 0.5,
+        'US', 'fuel_switch', 0.7,
+        'US', 'renovation', 0.70,
+        # GB 
+        'GB', 'solar', 0.34,
+        'GB', 'smartphone', 1.0,
+        'GB', 'skills', 0.95,
+        'GB', 'internet', 1.0,
+        'GB', 'hybrid', 0.85,
+        'GB', 'commute', 0.5,
+        'GB', 'fuel_switch', 0.7,
+        'GB', 'renovation', 0.80
+) %>% as.data.table
+
+# Aggregate all 3 countries to the quintile level,
+# and combine them to a single data.table
+props_long <- bind_rows(
+        deu_props %>% mutate(iso2 = "DE"),
+        uk_props  %>% mutate(iso2 = "GB"),
+        us_props  %>% mutate(iso2 = "US")
+) %>%
+        mutate(quintile = (weighted_decile - 1) %/% 2 + 1) %>% 
+        group_by(iso2, year, quintile) %>%
+        summarise(across(ends_with('prop'), ~weighted.mean(., n_total, na.rm = TRUE))) %>% 
+        as.data.table %>%
+        melt(id.vars = c('iso2', 'year', 'quintile'), 
+             value.name = 'share', 
+             variable.name = 'tech') %>%
+        mutate(tech = str_remove(tech, '_prop')) %>%
+        filter(share != 0, !is.na(share))
+
+# Function to obtain a fit for a particular iso2 x technology x quintile triplet
+nlsTechnology <- function(dt, max_penetration, growth_rate, inflexion_year) {
+        .tech <- dt$tech[1]
+        .quintile <- dt$quintile[1]
+        .iso2 <- dt$iso2[1]
+        
+        country_max <- max_penetration
+        
+        target_2050 <- tail(props_long[iso2 == .iso2 & 
+                                               quintile == .quintile & 
+                                               tech == .tech], 1)
+        target_2050$year <- 2050
+        target_2050$share <- country_max
+        dt <- rbindlist(list(dt, target_2050))
+        
+        dt %>%
+                minpack.lm::nlsLM(
+                        share ~ country_max / (1 + exp(-growth_rate * (year - inflexion_year))),
+                        .,
+                        start = list(
+                                country_max = country_max,
+                                growth_rate = growth_rate,
+                                inflexion_year = inflexion_year
+                        ),
+                        lower = c('country_max' = 0, 
+                                  'growth_rate' = 0, 
+                                  'inflexion_year' = 1900),
+                        upper = c('country_max' = country_max, 
+                                  'growth_rate' = 0.15, 
+                                  'inflexion_year' = 2500),
+                        control = nls.lm.control(maxfev = 4000, maxiter = 1024)
+                )
+}
+
+# Market penetration fits across all countries, technologies and quintiles
+tech_penetration_fits <- sapply(unique(props_long$iso2) %>% sort, function(.iso2) {
+        print(.iso2)
+        lapply(unique(props_long[iso2 == .iso2]$quintile) %>% sort, function(.quintile) {
+                print(.quintile)
+                sapply(unique(props_long[iso2 == .iso2]$tech), function(.tech) {
+                        print(.tech)
+                        props_long[iso2 == .iso2 & 
+                                           quintile == .quintile & 
+                                           tech == .tech] %>%
+                                nlsTechnology(
+                                        max_penetration = max_penetration[iso2 == .iso2 & 
+                                                                                  tech == .tech]$max_share,
+                                        growth_rate = 0.1, 
+                                        inflexion_year = 2025
+                                )
+                }, simplify = FALSE, USE.NAMES = TRUE)
+        })
+}, simplify = FALSE, USE.NAMES = TRUE)
+
+# Plot results for a given country
+plotCountry <- function(.iso2) {
+        lapply(unique(props_long[iso2 == .iso2]$tech), function(.tech) {
+                lapply(1:5, function(.quintile) {
+                        data.table(year = 2000:2050, quintile = .quintile) %>%
+                                mutate(
+                                        predicted_share = predict(
+                                                tech_penetration_fits[[.iso2]][[.quintile]][[.tech]],
+                                                newdata = list(year = year)
+                                        ),
+                                        tech = .tech
+                                )
+                }) %>% rbindlist
+        }) %>% rbindlist %>%
+                mutate(iso2 = .iso2) %>%
+                left_join(props_long, 
+                          by = c('iso2', 'year', 'tech', 'quintile')) %>%
+                mutate(quintile = str_c('Q', quintile)) %>%
+                ggplot(aes(year, predicted_share, color = tech)) +
+                geom_line() +
+                geom_point(aes(year, share, color = tech), size = 1) +
+                facet_grid(vars(quintile), vars(tech), switch = "y") +
+                scale_y_continuous(labels = scales::label_percent()) +
+                scale_x_continuous(breaks = seq(2000, 2050, by = 10)) +
+                xlab('') + 
+                ylab('Penetration rate') +
+                ggtitle(countrycode(.iso2, 'iso2c', 'country.name')) +
+                theme_minimal() +
+                theme(legend.position = 'none',
+                      text = element_text(size = 14))
+}
+
+# More robust function to extract NLS results
+extract_nls_summary_robust <- function(model_list) {
+        result_df <- data.frame()
+        
+        for(q_idx in seq_along(model_list)) {
+                quintile_models <- model_list[[q_idx]]
+                
+                for(tech_name in names(quintile_models)) {
+                        model <- quintile_models[[tech_name]]
+                        
+                        if(inherits(model, "nls")) {
+                                tryCatch({
+                                        # Just extract coefficients without standard errors
+                                        coefs <- coef(model)
+                                        
+                                        temp_df <- data.frame(
+                                                quintile = paste("Quintile", q_idx),
+                                                technology = tech_name,
+                                                parameter = names(coefs),
+                                                estimate = unname(coefs)
+                                        )
+                                        
+                                        result_df <- rbind(result_df, temp_df)
+                                }, error = function(e) {
+                                        warning(paste("Could not extract results for quintile", 
+                                                      q_idx, "technology", tech_name))
+                                })
+                        }
+                }
+        }
+        
+        return(result_df)
+}
+
+# Function to create a formatted table for one country
+create_country_table <- function(summary_df, country_name) {
+        # Reshape the data to wide format
+        summary_wide <- reshape2::dcast(
+                summary_df,
+                quintile + parameter ~ technology,
+                value.var = "estimate"
+        )
+        
+        # Print the results
+        print(paste("Results for", country_name))
+        print(summary_wide)
+        
+        return(summary_wide)
+}
+
+# Generate plots
+plotCountry('DE')
+plotCountry('GB')
+plotCountry('US')
+
+# Extract and display results for each country
+DE_summary <- extract_nls_summary_robust(tech_penetration_fits[['DE']])
+GB_summary <- extract_nls_summary_robust(tech_penetration_fits[['GB']])
+US_summary <- extract_nls_summary_robust(tech_penetration_fits[['US']])
+
+# Create tables
+DE_table <- create_country_table(DE_summary, "Germany")
+GB_table <- create_country_table(GB_summary, "United Kingdom")
+US_table <- create_country_table(US_summary, "United States")
+
+```
+### Version 3 - Paper Version
+```{r s-curve take three, echo=FALSE}
+# Configure maximum penetration hypothesis
+max_penetration <- tribble(
+        ~iso2, ~tech, ~max_share,
+        # Germany
+        'DE', 'solar', 0.95,
+        'DE', 'smartphone', 1.0,
+        'DE', 'skills', 0.8,
+        'DE', 'internet', 1.0,
+        'DE', 'hybrid', 1.0,
+        'DE', 'commute', 0.3,
+        'DE', 'fuel_switch', 0.80,
+        'DE', 'renovation', 0.83,
+        # US 
+        'US', 'solar', 0.44,
+        'US', 'smartphone', 1.0,
+        'US', 'skills', 0.90,
+        'US', 'internet', 1.0,
+        'US', 'hybrid', 0.75,
+        'US', 'commute', 0.5,
+        'US', 'fuel_switch', 0.7,
+        'US', 'renovation', 0.70,
+        # GB 
+        'GB', 'solar', 0.34,
+        'GB', 'smartphone', 1.0,
+        'GB', 'skills', 0.95,
+        'GB', 'internet', 1.0,
+        'GB', 'hybrid', 0.85,
+        'GB', 'commute', 0.5,
+        'GB', 'fuel_switch', 0.7,
+        'GB', 'renovation', 0.80
+) %>% as.data.table
+
+# Create filtered version of props_long without German hybrid
+props_long_filtered <- props_long %>%
+    filter(!(iso2 == "DE" & tech == "hybrid"),
+           ! (iso2 == "DE" & tech == "renovation" & year == 2019))
+
+# Function to obtain a fit for a particular iso2 x technology x quintile triplet
+nlsTechnology <- function(dt, max_penetration, growth_rate, inflexion_year) {
+        .tech <- dt$tech[1]
+        .quintile <- dt$quintile[1]
+        .iso2 <- dt$iso2[1]
+        
+        country_max <- max_penetration
+
+        # Handle smartphone saturation for US, UK, and DE
+        if(.tech == "smartphone" && .iso2 %in% c("US", "GB", "DE") && min(dt$share) > 0.8) {
+            if(.iso2 == "DE") {
+                # Special handling for German smartphones
+                growth_rate <- 0.3  # Faster growth
+                inflexion_year <- 2005  # Earlier inflection
+            } else {
+                # US and UK handling
+                growth_rate <- 0.2
+                inflexion_year <- min(dt$year) - 5
+            }
+            # Use observed maximum as lower bound for all saturated cases
+            country_max <- min(max(dt$share), country_max)
+        }
+        
+        target_2050 <- tail(props_long_filtered[iso2 == .iso2 &
+                                              quintile == .quintile &
+                                              tech == .tech], 1)
+        target_2050$year <- 2050
+        target_2050$share <- country_max
+        
+        dt <- rbindlist(list(dt, target_2050))
+        
+        dt %>%
+                minpack.lm::nlsLM(
+                        share ~ country_max / (1 + exp(-growth_rate * (year - inflexion_year))),
+                        .,
+                        start = list(
+                                country_max = country_max,
+                                growth_rate = growth_rate,
+                                inflexion_year = inflexion_year
+                        ),
+                        lower = c('country_max' = 0,
+                                   'growth_rate' = 0,
+                                   'inflexion_year' = 1980),
+                        upper = c('country_max' = country_max,
+                                   'growth_rate' = 0.15,
+                                   'inflexion_year' = 2500),
+                        control = nls.lm.control(maxfev = 4000, maxiter = 1024)
+                )
+}
+
+# Market penetration fits across all countries, technologies and quintiles
+tech_penetration_fits <- sapply(unique(props_long_filtered$iso2) %>% sort, function(.iso2) {
+        print(.iso2)
+        lapply(unique(props_long_filtered[iso2 == .iso2]$quintile) %>% sort, function(.quintile) {
+                print(.quintile)
+                sapply(unique(props_long_filtered[iso2 == .iso2]$tech), function(.tech) {
+                        print(.tech)
+                        props_long_filtered[iso2 == .iso2 &
+                                            quintile == .quintile &
+                                            tech == .tech] %>%
+                                nlsTechnology(
+                                        max_penetration = max_penetration[iso2 == .iso2 &
+                                                                                   tech == .tech]$max_share,
+                                        growth_rate = 0.1, 
+                                        inflexion_year = 2025
+                                )
+                }, simplify = FALSE, USE.NAMES = TRUE)
+        })
+}, simplify = FALSE, USE.NAMES = TRUE)
+
+# Plot results for a given country
+plotCountry <- function(.iso2) {
+        lapply(unique(props_long_filtered[iso2 == .iso2]$tech), function(.tech) {
+                lapply(1:5, function(.quintile) {
+                        data.table(year = 2000:2050, quintile = .quintile) %>%
+                                mutate(
+                                        predicted_share = predict(
+                                                tech_penetration_fits[[.iso2]][[.quintile]][[.tech]],
+                                                newdata = list(year = year)
+                                        ),
+                                        tech = .tech
+                                )
+                }) %>% rbindlist
+        }) %>% rbindlist %>%
+                mutate(iso2 = .iso2) %>%
+                left_join(props_long_filtered,
+                           by = c('iso2', 'year', 'tech', 'quintile')) %>%
+                mutate(quintile = str_c('Q', quintile)) %>%
+                ggplot(aes(year, predicted_share, color = tech)) +
+                geom_line() +
+                geom_point(aes(year, share, color = tech), size = 1) +
+                facet_grid(vars(quintile), vars(tech), switch = "y") +
+                scale_y_continuous(labels = scales::label_percent()) +
+                scale_x_continuous(breaks = seq(2000, 2050, by = 10)) +
+                xlab('') + 
+                ylab('Penetration rate') +
+                ggtitle(countrycode(.iso2, 'iso2c', 'country.name')) +
+                theme_minimal() +
+                theme(legend.position = 'none',
+                      text = element_text(size = 14))
+}
+
+# More robust function to extract NLS results
+extract_nls_summary_robust <- function(model_list) {
+        result_df <- data.frame()
+        
+        for(q_idx in seq_along(model_list)) {
+                quintile_models <- model_list[[q_idx]]
+                
+                for(tech_name in names(quintile_models)) {
+                        model <- quintile_models[[tech_name]]
+                        
+                        if(inherits(model, "nls")) {
+                                tryCatch({
+                                        # Just extract coefficients without standard errors
+                                        coefs <- coef(model)
+                                        
+                                        temp_df <- data.frame(
+                                                quintile = paste("Quintile", q_idx),
+                                                technology = tech_name,
+                                                parameter = names(coefs),
+                                                estimate = unname(coefs)
+                                        )
+                                        
+                                        result_df <- rbind(result_df, temp_df)
+                                }, error = function(e) {
+                                        warning(paste("Could not extract results for quintile",
+                                                       q_idx, "technology", tech_name))
+                                })
+                        }
+                }
+        }
+        
+        return(result_df)
+}
+
+# Function to create a formatted table for one country
+create_country_table <- function(summary_df, country_name) {
+        # Reshape the data to wide format
+        summary_wide <- reshape2::dcast(
+                summary_df,
+                quintile + parameter ~ technology,
+                value.var = "estimate"
+        )
+        
+        # Print the results
+        print(paste("Results for", country_name))
+        print(summary_wide)
+        
+        return(summary_wide)
+}
+
+# Generate plots
+plotCountry('DE')
+plotCountry('GB')
+plotCountry('US')
+
+# Extract and display results for each country
+DE_summary <- extract_nls_summary_robust(tech_penetration_fits[['DE']])
+GB_summary <- extract_nls_summary_robust(tech_penetration_fits[['GB']])
+US_summary <- extract_nls_summary_robust(tech_penetration_fits[['US']])
+
+# Create tables
+DE_table <- create_country_table(DE_summary, "Germany")
+GB_table <- create_country_table(GB_summary, "United Kingdom")
+US_table <- create_country_table(US_summary, "United States")
+
+## Regression tables
+tech_penetration_fits[['DE']] %>% `names<-`(str_c("Quintile ", 1:5)) %>%
+  modelsummary(stars = c('*' = 0.1, '**' = 0.05, '***' = 0.01),
+               shape = 'rbind',
+               output = 'tech_penetration_fits_DE.tex')
+
+tech_penetration_fits[['GB']] %>% `names<-`(str_c("Quintile ", 1:5)) %>%
+  modelsummary(stars = c('*' = 0.1, '**' = 0.05, '***' = 0.01),
+               shape = 'rbind')
+
+tech_penetration_fits[['US']] %>% `names<-`(str_c("Quintile ", 1:5)) %>%
+  modelsummary(stars = c('*' = 0.1, '**' = 0.05, '***' = 0.01),
+               shape = 'rbind')
+
+
+
+```
+Export for Overleaf
+```{r Latex version, echo=FALSE}
+output_dir <- "/Users/cassandraetter-wenzel/Documents/GitHub/EDITS/Output"
+
+create_model_summary <- function(models, country, output_path) {
+    # Ensure models are named and valid
+    if (is.null(names(models))) {
+        names(models) <- str_c("Quintile ", seq_along(models))
+    }
+
+    # Filter only valid models
+    valid_models <- models[sapply(models, function(x) inherits(x, "nls"))]
+
+    if (length(valid_models) == 0) {
+        stop("Error: No valid models found.")
+    }
+
+    print(names(valid_models))  # Ensure valid names
+
+    # Manually extract model summaries for nls models
+    model_summaries <- lapply(valid_models, function(model) {
+        summary(model)$coefficients
+    })
+
+    # Convert the summaries into a format modelsummary can use
+    model_summary_df <- do.call(rbind, model_summaries)
+    rownames(model_summary_df) <- names(valid_models)  # Set names of models
+
+    # Write summary to LaTeX
+    modelsummary(
+        model_summary_df,
+        stars = c('*' = 0.1, '**' = 0.05, '***' = 0.01),
+        shape = 'rbind',
+        output = "latex_tabular",
+        booktabs = TRUE,
+        fmt = "%.3f",
+        table_format = "latex",
+        title = paste("Technology Adoption Parameters:", country),
+        gof_omit = 'AIC|BIC|Log|fin|Conv',
+        coef_map = c(
+          "country_max" = "Maximum Penetration",
+          "growth_rate" = "Growth Rate",
+          "inflexion_year" = "Inflection Year"
+        ),
+        note = c("* p < 0.1, ** p < 0.05, *** p < 0.01"),
+        tex_wrap = c("begin{table}[!htbp]", "\\centering", "\\small", "\\end{table}"),
+        add_rows = NULL
+    ) %>% readr::write_file(output_path)
+}
+
+# Germany
+create_model_summary(tech_penetration_fits[['DE']], "Germany", 
+                    file.path(output_dir, "tech_penetration_fits_DE.tex"))
+
+# UK
+create_model_summary(tech_penetration_fits[['GB']], "United Kingdom", 
+                    file.path(output_dir, "tech_penetration_fits_GB.tex"))
+
+# US
+create_model_summary(tech_penetration_fits[['US']], "United States", 
+                    file.path(output_dir, "tech_penetration_fits_US.tex"))
+
+```
+
+General Analysis could also be shown like this
+```{r model summary, echo = FALSE}
+# Function to create table for one country
+create_country_table <- function(country_summary, country_name) {
+  # Format table
+  pub_table <- country_summary %>%
+    # Round estimates to 3 decimal places
+    mutate(
+      estimate = round(estimate, 3)
+    ) %>%
+    # Pivot wider to get technologies as columns
+    pivot_wider(
+      id_cols = c(quintile, parameter),
+      names_from = technology,
+      values_from = estimate
+    ) %>%
+    # Arrange by parameter and quintile
+    arrange(parameter, quintile)
+  
+  # Create formatted table
+  formatted_table <- pub_table %>%
+    kbl(format = "html",
+        caption = paste("NLS Regression Results for", country_name),
+        align = "c",
+        escape = FALSE) %>%
+    kable_styling(bootstrap_options = c("striped", "hover"),
+                  full_width = FALSE) %>%
+    # Group by parameters instead of countries
+    pack_rows(index = table(pub_table$parameter)) %>%
+    add_header_above(c("Quintile Groups" = 2, 
+                      "Technologies" = ncol(pub_table) - 2)) %>%
+    footnote(
+      general = paste("Note: Values show parameter estimates from NLS regression.",
+                     "Parameters shown are country_max (maximum penetration),",
+                     "growth_rate (speed of adoption), and",
+                     "inflexion_year (year of maximum growth).")
+    )
+  
+  return(formatted_table)
+}
+
+# Create separate tables for each country
+germany_table <- create_country_table(DE_summary, "Germany")
+uk_table <- create_country_table(GB_summary, "United Kingdom")
+us_table <- create_country_table(US_summary, "United States")
+
+# Return all tables
+list(
+  germany = germany_table,
+  uk = uk_table,
+  us = us_table
+)
+
+```
+### Country combined projections by Q1-Q5
+
+Perhaps most interesting is looking at the technologies by quintile accross the three Countries.
+```{r combined quintile view, echo = FALSE}
+# Function to create plot for a specific quintile
+create_quintile_plot <- function(quintile_num) {
+  # Extract predictions for the specified quintile
+  quintile_predictions <- lapply(c('DE', 'GB', 'US'), function(.iso2) {
+    lapply(unique(props_long_filtered[iso2 == .iso2]$tech), function(.tech) {
+      data.table(
+        year = 2000:2050,
+        predicted_share = predict(
+          tech_penetration_fits[[.iso2]][[quintile_num]][[.tech]],
+          newdata = list(year = 2000:2050)
+        ),
+        tech = .tech,
+        iso2 = .iso2
+      )
+    }) %>% rbindlist
+  }) %>% rbindlist
+
+  # Create the plot
+  p <- ggplot(quintile_predictions, aes(x = year, y = predicted_share, color = iso2)) +
+    geom_line() +
+    facet_wrap(~tech, scales = "free_y", ncol = 3) +
+    scale_y_continuous(labels = scales::label_percent()) +
+    scale_x_continuous(breaks = seq(2000, 2050, by = 10)) +
+    scale_color_manual(
+      values = c("DE" = "#1f77b4", "GB" = "#ff7f0e", "US" = "#2ca02c"),
+      labels = c("DE" = "Germany", "GB" = "United Kingdom", "US" = "United States")
+    ) +
+    labs(
+      x = "Year",
+      y = "Adoption Rate",
+      color = "Country",
+      title = paste("Technology Adoption Rates by Country (Q", quintile_num, ")", sep = ""),
+      subtitle = "Predicted adoption trajectories for different technologies"
+    ) +
+    theme_minimal() +
+    theme(
+      text = element_text(size = 12),
+      strip.text = element_text(size = 12, face = "bold"),
+      legend.position = "bottom",
+      panel.grid.minor = element_blank()
+    )
+  
+  ggsave(
+    filename = file.path(output_dir, paste0("tech_adoption_q", quintile_num, ".png")),
+    plot = p,
+    width = 12,
+    height = 8,
+    dpi = 300
+  )
+  
+  return(p)
+}
+plots <- lapply(1:5, create_quintile_plot)
+
+library(patchwork)
+combined_plot <- (plots[[1]] / plots[[2]] / plots[[3]] / plots[[4]] / plots[[5]])
+ggsave(
+  filename = file.path(output_dir, "tech_adoption_all_quintiles.pdf"),
+  plot = combined_plot,
+  width = 15,
+  height = 40,
+  device = cairo_pdf
+)
+```
+
+# Step 3: 2050 Diffusion Impacts
+
+Step 3 Estimate how distributional impacts of technology uptake affect final energy costs for household across time. Use survey data to estimate how final energy costs increase/decrease with different technologies including in a household (holding all other variables constant) in 2020. Then, hold energy prices static (very large assumption) to see how technology diffusion affects final energy costs for residential sector at decile level in 2050.
+
+I first get the average amount spent on energy, then roughly estimate how much is on gas vs electric, then get historical prices and convert amount spent to gas and electric to consumption. This is easier for some data (ex. US ) than others. For the US I use state level prices from SEDS. To check my consumption comparison against it, I compare my estimates against the ACS. 
+
+For Germany I use national and compare against XX. 
+For the UK, I use national and compare against XX. 
+
+
+First See what to compare against with international data. 
+```{r IEA energy price data, echo=FALSE}
+# IEA Household Final Annual Average -- USD/MWh 
+us_prices <- tibble(
+  country = "US",
+  year = 2011:2021,
+  elec_price = c(117.169, 118.785, 121.237, 125.179, 126.513, 125.489, 128.871, 128.693, 130.144, 131.959, 137.237),  # UDD per MWh
+  gas_price = c(36.415, 35.322, 34.02, 36.134, 34.233, 33.166, 35.874, 34.555, 34.542, 35.773, 40.532)
+)
+
+
+
+# IEA USD/ MWh in PPP
+deu_prices <- tibble(
+  country = "DEU",
+  year = 2011:2021,
+  elec_price = c(320.702, 334.775, 376.879, 387.223, 378.925, 395.026, 409.247, 407.031, 397.152, 409.629, 439.238),  
+  gas_price = c(84.405, 89.26, 91.983, 92.8, 90.775, 91.197, 89.122, 88.807, 90.435, 92.317, 97.579)
+)
+
+
+# IEA Household EPT FD USD/MWh in PPP
+uk_prices <- tibble(
+  country = "UK",
+  year = 2011:2021,
+  elec_price = c(184.896, 195.878, 211.692, 220.36, 217.323, 218.736, 232.745, 249.677, 272.748, 276.079, 303.6),  
+  gas_price = c(59.501, 64.918, 69.562, 73.303, 69.636, 64.073, 62.914, 64.889, 66.345, 60.626, 62.688)
+
+)
+
+
+# Combine all data
+historical_prices <- bind_rows(
+  us_prices,
+  deu_prices,
+  uk_prices
+)
+
+# Function to merge historical prices with country-specific datasets
+merge_prices <- function(country_data, country_name) {
+  country_data %>%
+    left_join(
+      historical_prices %>% filter(country == country_name),
+      by = "year"
+    )
+}
+
+# Create visualizations for available data
+create_price_plot <- function(data) {
+  ggplot(data %>% filter(!is.na(elec_price) & !is.na(gas_price)), aes(x = year)) +
+    geom_line(aes(y = elec_price, color = country, linetype = "Electricity"), size = 1) +
+    geom_line(aes(y = gas_price, color = country, linetype = "Natural Gas"), size = 1) +
+    theme_minimal() +
+    labs(
+      title = "Historical Energy Prices (2011-2021)",
+      subtitle = "By Country USD/MWh",
+      y = "$/MWh",
+      color = "Country",
+      linetype = "Energy Type",
+      caption = "Sources: IEA Energy Price Data Household Final Residential (2011-2021)"
+    ) +
+    scale_color_viridis_d() +
+    theme(
+      legend.position = "bottom",
+      strip.text = element_text(size = 12, face = "bold") 
+    ) + 
+    ylim(0, NA)
+}
+
+
+# Function to print data summary with source documentation
+print_summary <- function(data) {
+  for (country_name in unique(data$country)) {
+    country_data <- data %>% 
+      filter(country == country_name, !is.na(elec_price))
+    
+    if (nrow(country_data) > 0) {
+      cat(sprintf("\nSummary for %s:\n", country_name))
+      print(summary(country_data[c("elec_price", "gas_price")]))
+      cat("Data source: ", switch(country_name,
+                                "US" = "IEA",
+                                "DEU" = "IEA",
+                                "UK" = "IEA"),
+          "\n")
+    }
+  }
+}
+
+historical_prices <- bind_rows(us_prices, deu_prices, uk_prices)
+price_plot <- create_price_plot(historical_prices)
+print_summary(historical_prices)
+print(price_plot)
+```
+
+The US data from IEA does not work, I need state prices-- otherwise it looks like there was no volatility for gas in particular, when that is very much not the case. Focus on US first with state elec and gas prices. 
+
+## US Consumption Creation 
+
+```{r US energy Consumption Calculation, echo = FALSE}
+psid_states <- fread("~/Documents/GitHub/EDITS/Data/psid_states.csv") %>%
+  left_join(data.table(StateCode = state.abb, us_state = state.name), by ='us_state') %>%
+  mutate(StateCode = ifelse(is.na(StateCode), 'DC', StateCode))
+
+seds <- fread("~/Documents/GitHub/EDITS/Data/Complete_SEDS.csv")[Year %in% unique(US$year) & MSN %chin% c("ESRCD", "NGRCD")] %>%
+  left_join(psid_states, by = 'StateCode') %>%
+  mutate(v = c("ESRCD" = "elec_price", "NGRCD" = "gas_price")[MSN],
+         psid_code = ifelse(is.na(psid_code), -1, psid_code),
+         us_state = ifelse(is.na(us_state), 'US', us_state)) %>%
+  rename(year = Year) %>%
+  dcast(psid_code + us_state + year ~ v, value.var = 'Data') 
+
+US_energy <- US %>% 
+  mutate(hh_state = ifelse(is.na(hh_state), -1, hh_state)) %>%
+  left_join(seds, by = c('hh_state' = 'psid_code', 'year')) %>%
+  mutate(elec_a_mmbtu = elec_a_exp / elec_price,
+         gas_a_mmbtu = gas_a_exp / gas_price, 
+         elec_a_mwh = elec_a_mmbtu * 0.29307107,
+         gas_a_mwh = gas_a_mmbtu * 0.29307107)
+
+US_energy_by_decile_MWH <- US_energy %>%
+  as.data.table %>% 
+  dplyr::select(year, weighted_decile, weight, elec_a_mwh, gas_a_mwh) %>%
+  melt(id.vars = c('year', 'weighted_decile', 'weight')) %>%
+  mutate(variable = str_remove(variable, '_a_mwh')) %>%
+  .[, .(value = weighted.mean(value, weight, na.rm = TRUE),
+        weight = sum(weight)),
+    by = .(year, weighted_decile, variable)] %>%
+  arrange(year, weighted_decile, variable)
+
+US_energy_by_decile_MWH %>%
+  ggplot(aes(year, value, color = factor(weighted_decile))) +
+  geom_line() +
+  ylim(0, NA) +
+  facet_wrap(~variable) +
+  theme_minimal() + 
+  labs(
+    title = "Average US HH Consumption (2011 - 2021)", 
+    y = "Annual Energy Consumption (MWh)") +
+    theme(legend.position = "bottom",
+          strip.text = element_text(size = 12, face = "bold")
+      
+  )
+ggsave("~/Documents/GitHub/EDITS/Output/US_consumption.png", width = 10, height = 7, dpi = 300)
+### Average for all deciles 
+US_energy_by_decile_MWH[, .(value = weighted.mean(value, weight, na.rm = TRUE)), by = .(year, variable)] %>%
+  ggplot(aes(year, value)) +
+  geom_line() +
+  facet_wrap(~variable) +
+  ylim(0, NA) +
+  theme_minimal() + 
+  labs(
+    title = "Average US Energy Consumption (2011- 2021)", 
+    y = "Household Energy Consumption (MWh)") + 
+  theme(
+    legend.position = "bottom",
+    strip.text = element_text(size = 12, face = "bold")
+  )
+
+
+as.data.table(US %>% mutate(gas_a_exp = ifelse(is.na(gas_a_exp), 0, gas_a_exp), elec_a_exp = ifelse(is.na(elec_a_exp), 0, elec_a_exp)))[, .(tot_energy = weighted.mean(elec_a_exp + gas_a_exp, weight, na.rm = TRUE)), by = year]
+
+## Compare with ACS Consumption data 
+acs <- data.table(
+  year = seq(2011, 2021, 2),
+  acs_energy = c(1843, 1815, 1881, 1801, 1888, 1998)
+)
+
+US_consumption <- US_energy %>%
+  group_by(weighted_decile, year) %>%
+  summarise(
+    baseline_elec = weighted.mean(elec_a_mwh, w = weight, na.rm = TRUE),
+    baseline_gas = weighted.mean(gas_a_mwh, w = weight, na.rm = TRUE),
+    elec_price = weighted.mean(elec_price, w = weight, na.rm = TRUE),
+    gas_price = weighted.mean(gas_price, w = weight, na.rm = TRUE) 
+  )
+
+
+```
+
+## DEU Consumption Creation 
+biannual data from Eurstat nrg_pc_204 on prices for electricity and gas. Can add in heating and cooling degree days. 
+```{r deu consumption, echo = FALSE}
+
+nrg_gas <-fread("~/Documents/GitHub/EDITS/Data/estat_nrg_pc_202_filtered_en.csv") %>%
+        select(geo, TIME_PERIOD, currency, OBS_VALUE) %>%
+        rename(gas_price = OBS_VALUE)
+
+nrg <- fread("~/Documents/GitHub/EDITS/Data/estat_nrg_pc_204_filtered_en.csv") %>% 
+        select(geo, TIME_PERIOD, currency, OBS_VALUE) %>%
+        rename(elec_price = OBS_VALUE) %>%
+        left_join(nrg_gas, by = c('geo', 'TIME_PERIOD', 'currency'))%>%
+        separate(TIME_PERIOD, into = c("year", "semester"), sep = "-") %>%
+        mutate(
+                year = as.numeric(year),
+                semester_num = if_else(semester == "S1", 1, 2)
+        )
+
+DEU_energy <- DEU %>%
+        mutate(
+                semester_num = if_else(hghmonth <= 6, 1, 2)
+        ) %>%
+        left_join(nrg, by = c("year", "semester_num")) %>%
+        mutate(elec_a_mwh = elec_a_exp / (elec_price * 1000),
+               gas_a_mwh = gas_a_exp / (gas_price * 1000))
+
+
+DEU_energy_by_decile_MWH <- DEU_energy %>%
+        as.data.table %>% 
+        dplyr::select(year, weighted_decile, weight, elec_a_mwh, gas_a_mwh) %>%
+        melt(id.vars = c('year', 'weighted_decile', 'weight')) %>%
+        mutate(variable = str_remove(variable, '_a_mwh')) %>%
+        .[, .(value = weighted.mean(value, weight, na.rm = TRUE),
+              weight = sum(weight)),
+          by = .(year, weighted_decile, variable)] %>%
+        arrange(year, weighted_decile, variable)
+
+DEU_energy_by_decile_MWH %>%
+        ggplot(aes(year, value, color = factor(weighted_decile))) +
+        geom_line() +
+        ylim(0, NA) +
+        facet_wrap(~variable) +
+        theme_minimal() + 
+        labs(
+                title = "Average German HH Consumption (2011 - 2021)", 
+                y = "Annual Energy Consumption (MWh)") +
+        theme(legend.position = "bottom",
+              strip.text = element_text(size = 12, face = "bold")
+              
+        )
+ggsave("~/Documents/GitHub/EDITS/Output/DE_consumption.png", width = 10, height = 7, dpi = 300)
+### Average for all deciles 
+
+DEU_energy_by_decile_MWH[, .(value = weighted.mean(value, weight, na.rm = TRUE)), by = .(year, variable)] %>%
+        ggplot(aes(year, value)) +
+        geom_line() +
+        facet_wrap(~variable) +
+        ylim(0, NA) +
+        theme_minimal() + 
+        labs(
+                title = "Average German Energy Consumption (2011- 2021)", 
+                y = "Household Energy Consumption (MWh)") + 
+        theme(
+                legend.position = "bottom",
+                strip.text = element_text(size = 12, face = "bold")
+        )
+
+DEU_consumption <- DEU_energy %>%
+  group_by(weighted_decile, year) %>%
+  summarise(
+    baseline_elec = weighted.mean(elec_a_mwh, w = weight, na.rm = TRUE),
+    baseline_gas = weighted.mean(gas_a_mwh, w = weight, na.rm = TRUE),
+    elec_price = weighted.mean(elec_price, w = weight, na.rm = TRUE) * 1000,
+    gas_price = weighted.mean(gas_price, w = weight, na.rm = TRUE) * 1000
+  )
+
+```
+## UK Consumption Creation  
+
+UK asks average annual household costs for electric, gas, and duel, so no seasonal adjustment but I can add in heating/ cooling degree days for consumption. 
+
+
+```{r uk consumption creation, echo=FALSE}
+uk_gas <-fread("~/Documents/GitHub/PhD/Data/uk_gas_prices.csv") %>%
+        mutate(source = "Gas")
+
+uk_elec <- fread("~/Documents/GitHub/PhD/Data/uk_elec_prices.csv") %>% 
+        mutate(source = "Electricity")
+
+region_mapping <- data.frame(
+        region_name = c("London", "South East", "West Midlands", "East Midlands", "North West", 
+                        "Wales", "North East", "Yorkshire and the Humber", "Scotland", "East of England", 
+                        "Northern Ireland", "north east", "north west", "yorkshire and the humber", 
+                        "east midlands", "South West", "west midlands", "south west", "east of england", 
+                        "london", "south east", "wales", "scotland", "northern ireland"),
+        region_code = c(7, 8, 5, 4, 2, 10, 1, 3, 11, 6, 12, 1, 2, 3, 4, 9, 5, 9, 6, 7, 8, 10, 11, 12)
+)
+
+UK_energy <- UK %>%
+        left_join(region_mapping, by = c("gor_dv" = "region_name")) %>%
+        rename(weight = hhdenui_xw, gor_dv_code = region_code) %>%
+        mutate(payment = case_when(
+                elecpay %in% c("A pre-payment (key/card or token) meter", "Fuel Direct scheme or direct from benefits") |
+                        gaspay %in% c("A pre-payment (key/card or token) meter", "Fuel Direct scheme or direct from benefits") |
+                        duelpay %in% c("A pre-payment (key/card or token) meter", "Fuel Direct scheme or direct from benefits") ~ "Prepayment",
+                
+                elecpay %in% c("A monthly bill (by direct debit or other means)", "A quarterly bill (by direct debit or other means)",
+                               "A fixed amount each month by standing order", "An annual bill (by direct debit or other means)") |
+                        gaspay %in% c("A monthly bill (by direct debit or other means)", "A quarterly bill (by direct debit or other means)",
+                                      "A fixed amount each month by standing order", "An annual bill (by direct debit or other means)") |
+                        duelpay %in% c("A monthly bill (by direct debit or other means)", "A quarterly bill (by direct debit or other means)",
+                                       "A fixed amount each month by standing order", "An annual bill (by direct debit or other means)") ~ "Direct Debit",
+                
+                elecpay %in% c("Frequent cash payments (ie more frequent than once a month)", "Other", "It's included in the rent", "Staywarm scheme") |
+                        gaspay %in% c("Frequent cash payments (ie more frequent than once a month)", "Other", "It's included in the rent", "Staywarm scheme") |
+                        duelpay %in% c("Frequent cash payments (ie more frequent than once a month)", "Other", "It's included in the rent", "Staywarm scheme") ~ "Credit",
+                
+                elecpay %in% c("don't know", "inapplicable", "refusal", "missing") |
+                        gaspay %in% c("don't know", "inapplicable", "refusal", "missing") |
+                        duelpay %in% c("don't know", "inapplicable", "refusal", "missing") ~ "Overall",
+                TRUE ~ "Unknown"
+        )) 
+
+UK_energy <- UK_energy %>%
+        mutate(gor_dv_code = as.character(gor_dv_code), year = as.integer(year))
+
+uk_elec <- uk_elec %>%
+        mutate(gor_dv = as.character(gor_dv), year = as.integer(year))
+
+uk_gas <- uk_gas %>%
+        mutate(gor_dv = as.character(gor_dv), year = as.integer(year))
+
+get_energy_price <- function(data, prices, energy_type) {
+        data %>%
+                left_join(prices, by = c("year", "gor_dv_code" = "gor_dv")) %>%
+                mutate(
+                        price = case_when(
+                                energy_type == "electricity" & xpelecy > 1 & payment == "Credit" ~ `Credit: Unit cost (Pence per kWh)`,
+                                energy_type == "electricity" & xpelecy > 1 & payment == "Direct Debit" ~ `Direct debit: Unit cost (Pence per kWh)`,
+                                energy_type == "electricity" & xpelecy > 1 & payment == "Prepayment" ~ `Prepayment: Unit cost (Pence per kWh)`,
+                                energy_type == "electricity" & xpelecy > 1 ~ `Overall: Unit cost (Pence per kWh)`,
+                                
+                                energy_type == "gas" & xpgasy > 1 & payment == "Credit" ~ `Credit: Unit cost (Pence per kWh)`,
+                                energy_type == "gas" & xpgasy > 1 & payment == "Direct Debit" ~ `Direct debit: Unit cost (Pence per kWh)`,
+                                energy_type == "gas" & xpgasy > 1 & payment == "Prepayment" ~ `Prepayment: Unit cost (Pence per kWh)`,
+                                energy_type == "gas" & xpgasy > 1 ~ `Overall: Unit cost (Pence per kWh)`,
+                                
+                                TRUE ~ NA_real_
+                        )
+                ) %>%
+                pull(price)
+}
+
+UK_energy <- UK_energy %>%
+    mutate(
+        elec_price = (get_energy_price(UK_energy, uk_elec, "electricity") * 1000) / 100,  
+        gas_price = (get_energy_price(UK_energy, uk_gas, "gas") * 1000) / 100 
+        )%>%         
+    mutate(
+        elec_a_mwh = (xpelecy / elec_price), 
+        gas_a_mwh = (xpgasy / gas_price)     
+    )
+
+
+UK_energy_by_decile_MWH <- UK_energy %>%
+        as.data.table %>% 
+        dplyr::select(year, weighted_decile, weight, elec_a_mwh, gas_a_mwh) %>%
+        melt(id.vars = c('year', 'weighted_decile', 'weight')) %>%
+        mutate(variable = str_remove(variable, '_a_mwh')) %>%
+        .[, .(value = weighted.mean(value, weight, na.rm = TRUE),
+              weight = sum(weight)),
+          by = .(year, weighted_decile, variable)] %>%
+        arrange(year, weighted_decile, variable)
+
+UK_energy_by_decile_MWH %>%
+        ggplot(aes(year, value, color = factor(weighted_decile))) +
+        geom_line() +
+        ylim(0, NA) +
+        facet_wrap(~variable) +
+        theme_minimal() + 
+        labs(
+                title = "Average UK HH Consumption (2011 - 2021)", 
+                y = "Annual Energy Consumption (MWh)") +
+        theme(legend.position = "bottom",
+              strip.text = element_text(size = 12, face = "bold")
+              
+        )
+ggsave("~/Documents/GitHub/EDITS/Output/UK_consumption.png", width = 10, height = 7, dpi = 300)
+
+UK_consumption <- UK_energy %>%
+  group_by(weighted_decile, year) %>%
+  summarise(
+    baseline_elec = weighted.mean(elec_a_mwh, w = weight, na.rm = TRUE),
+    baseline_gas = weighted.mean(gas_a_mwh, w = weight, na.rm = TRUE),
+    elec_price = weighted.mean(elec_price, w = weight, na.rm = TRUE),
+    gas_price = weighted.mean(gas_price, w = weight, na.rm = TRUE) 
+  )
+```
+
+
+```{r coefficient cleaning, include = FALSE}
+UK_energy$solar1 <- case_when(
+  UK_energy$solar1 %in% c("Yes - seriously considering", "yes - seriously considering", "Yes - fitted", "yes - fitted") ~ 1,  # Yes
+  UK_energy$solar1 %in% c("No", "no", "Not applicable / rented accommodation", "spontaneous not applicable/rented accommodation", "Considered in the past and rejected", "considered in the past and rejected", "don't know", "refusal", "missing") ~ 2,  # No
+  TRUE ~ NA_real_  # For any other unrecognized values, set to NA
+)
+
+UK_energy$tenure_dv <- case_when(
+  UK_energy$ncars > 10 ~ NA_character_,  # If ncars > 10, set tenure_dv to NA (character)
+  UK_energy$tenure_dv %in% c("Owned with mortgage", "Owned outright") ~ "Owned",  # Owned
+  UK_energy$tenure_dv %in% c("Rented private unfurnished", "Rented private furnished", "Rented from employer") ~ "Rented",  # Rented
+  UK_energy$tenure_dv %in% c("Housing assoc rented", "Local authority rent") ~ "Public Housing",  # Public Housing
+  UK_energy$tenure_dv %in% c("missing", "Other") ~ NA_character_  # NA for missing/other
+)
+```
+
+### Technology model for electricity 
+
+Use estimates from academic literature for how much different technologies consume for electricity and gas. 
+For vehicles, need to also look at switching from petrol to electric only. 
+
+1. Baseline 2050 consumption
+2. Elasticizes of Demand --- For Future 
+3. Adjusted Consumption with technology uptake 
+4. Combine for impacts 
+
+Step 1. Panel data regression with individual (household) fixed effects to control for variation within households. 
+
+UK: I use a panel data regression with within fixed-effects to model energy consumption with the dependent variable as electricity consumption in Mwh and independent variables on electricity prices, gas prices, income, household size, urban/ rural divide, owner/ rental status of home, and other socio-economic variables. Overall the model explains 17.92% of the variation. Electricity prices are highly correlated (-0.115)***, meaning that higher electricity prices are associated with lower consumption. Gas prices, hwoever, suggest that increases in gas lead to increases in electricity, potentially through fuel switching, electric heating, or other means. As households have more income, they tend to consume more electricity (0.791)*** and urban homes consume more electricity than rural homes (2.688)***. While this is true in general, effect diminishes with income and household size. Interestingly, results show that public housing tends to have higher consumption than homeonwers, who in turn consume less than renters. London consumes less than other retiongs and north west has higher consumption relative to the national average. Interestingly, deciles have a U-shape relationship, with lowest income consuming a bit more (potentially as a result of poor housing quality and lack of efficient technologies), middle having the largest reductions and uper income having a luxury effect with larger homes and more use. 
+
+Sensititivye analysis tells me that fixed effect model is preferred to random effects (reject the null of the hausman test) and use fixed effect panel to model my electricity consumption to 2050. VIF multicollinearity tests are all below 10 (highest are weighted decile and income at 6, which are correlated)
+
+```{r UK panel with fixed effects, echo = FALSE}
+UK_energy$year <- as.numeric(as.character(UK_energy$year))
+US_energy$year <- as.numeric(as.character(US_energy$year))
+DEU_energy$year <- as.numeric(as.character(DEU_energy$year))
+DEU_energy <- DEU_energy %>%
+  mutate(across(c(hgtyp1hh, hgowner, weighted_decile), as.factor))
+
+library(plm)
+energy_data_us <- pdata.frame(US_energy, index =  "year")
+energy_data_de <- pdata.frame(DEU_energy, index =  "year")
+energy_data_uk <- pdata.frame(UK_energy, index =  "year")
+energy_data_uk$weighted_decile <- as.factor(energy_data_uk$weighted_decile)
+energy_data_us$weighted_decile <- as.factor(energy_data_us$weighted_decile)
+energy_data_de$weighted_decile <- as.factor(energy_data_de$weighted_decile)
+
+### Electricity #### 
+model_uk_elec <- plm(elec_a_mwh ~ elec_price + gas_price + log(adjusted_income_2yr) + hhsize + 
+                            urban_dv + age_dv + hsrooms + tenure_dv + gor_dv + weighted_decile + year,
+                               data = energy_data_uk, model = "within", index = c("weighted_decile", "year"))
+
+model_us_elec <- plm(elec_a_mwh ~elec_price + gas_price + log(adjusted_income_2yr) + hh_size + 
+                       hh_rooms + hh_own + us_state + weighted_decile + year, 
+                     data = energy_data_us, model = "within", index = 
+                       c("weighted_decile", "year"))
+
+model_de_elec <- plm(elec_a_mwh ~elec_price + gas_price + log(adjusted_income_2yr) + hgtyp1hh +
+                       hgsize + hgowner + hgnuts1 + weighted_decile + year, 
+                     data = energy_data_de, model = "within", index = 
+                       c("weighted_decile", "year"))
+
+summary(model_us_elec)
+summary(model_uk_elec)
+summary(model_de_elec)
+
+model_uk_gas <- plm(gas_a_mwh ~ elec_price + gas_price + log(adjusted_income_2yr) + hhsize + 
+                            urban_dv + age_dv + hsrooms + tenure_dv + gor_dv + weighted_decile + year,
+                               data = energy_data_uk, model = "within", index = c("weighted_decile", "year"))
+
+model_us_gas <- plm(gas_a_mwh ~elec_price + gas_price + log(adjusted_income_2yr) + hh_size + 
+                       hh_rooms + hh_own + us_state + weighted_decile + year, 
+                     data = energy_data_us, model = "within", index = 
+                       c("weighted_decile", "year"))
+
+model_de_gas<- plm(gas_a_mwh ~elec_price + gas_price + log(adjusted_income_2yr) + hgtyp1hh +
+                       hgsize + hgowner + hgnuts1 + weighted_decile + year, 
+                     data = energy_data_de, model = "within", index = 
+                       c("weighted_decile", "year"))
+
+summary(model_uk_gas)
+summary(model_us_gas)
+summary(model_de_gas)
+
+# Fit random effects model
+model_uk_elec_random <- plm(formula = elec_a_mwh ~ elec_price + gas_price + log(adjusted_income_2yr),
+                    data = energy_data_uk, model = "random", index = c("hidp", "year"))
+model_uk_gas_random <- plm(formula = gas_a_mwh ~ elec_price + gas_price + log(adjusted_income_2yr),
+                    data = energy_data_uk, model = "random", index = c("hidp", "year"))
+
+# Perform Hausman Test
+hausman_test <- phtest(model_uk_gas, model_uk_gas_random)
+hausman_test
+
+
+### Sensitivity Testing ###
+
+plot_residuals <- function(model) {
+  std_residuals <- residuals(model) / sd(residuals(model))
+  residuals_df <- data.frame(index = 1:length(std_residuals), residuals = std_residuals)
+  
+  ggplot(residuals_df, aes(x = index, y = residuals)) +
+    geom_hline(yintercept = 0, color = "gray50") +
+    geom_hline(yintercept = c(-3, 3), color = "red", linetype = "dashed") +
+    geom_point(size = 0.5, alpha = 0.5) +
+    theme_minimal() +
+    labs(title = "Standardized Residuals Plot", x = "Observation Index", y = "Standardized Residuals")
+}
+ ### look at residuals for each model 
+plot_residuals(model_uk_elec)
+plot_residuals(model_uk_gas)
+plot_residuals(model_us_elec)
+plot_residuals(model_us_gas)
+plot_residuals(model_de_gas)
+plot_residuals(model_de_elec)
+
+# Clustered standard errors for panel data models using plm
+library(lmtest)
+coeftest(model_uk_elec, vcov = vcovHC(model_uk_elec, type = "HC1", cluster = "group"))
+coeftest(model_uk_gas, vcov = vcovHC(model_uk_gas, type = "HC1", cluster = "group"))
+
+### check for multicollinearity 
+# Create a standard linear model with the same variables for VIF checking -- good for UK, Germany has some collinearity for income. 
+# for the US states are very correlated, which is expected as gas and electricity prices are at the state level. 
+library(car)
+lm_for_vif_uk <- lm(gas_a_mwh ~ elec_price + gas_price + log(adjusted_income_2yr) + 
+                 hhsize + urban_dv + age_dv + hsrooms + tenure_dv + gor_dv + 
+                 weighted_decile,
+                 data = energy_data_uk)
+
+lm_for_vif_de<- lm(gas_a_mwh ~elec_price + gas_price + log(adjusted_income_2yr) + hgtyp1hh +
+                       hgsize + hgowner + hgnuts1 + weighted_decile, 
+                     data = energy_data_de)
+
+lm_for_vif_us <- lm(elec_a_mwh ~elec_price + gas_price + log(adjusted_income_2yr) + hh_size + 
+                       hh_rooms + hh_own + us_state + weighted_decile, 
+                     data = energy_data_us)
+# Check VIF
+vif(lm_for_vif_us)
+
+```
+Basic ARIMA price forecasting for electricity. Gas prices is ARIMA with bootstrap to help with volatility. These become input variables in my future predictions dataframe. 
+
+### Projection for Price
+
+Clean price data 
+```{r electricity price forecast, echo = FALSE}
+## ensure its in GBP per MWh
+uk_gas <- uk_gas %>% 
+  rename(gas_price = "Overall: Unit cost (Pence per kWh)") %>%
+  mutate(gas_price = as.numeric(gas_price),
+         gas_price = (gas_price / 100) * 1000)  # Convert to numeric in the same pipeline
+uk_gas <- uk_gas[, c("year", "gor_dv", "gas_price")]
+
+
+uk_elec <- uk_elec %>%
+        rename(elec_price = "Overall: Unit cost (Pence per kWh)" ) %>%
+  mutate(elec_price = as.numeric(elec_price),
+         elec_price = (elec_price / 100) * 1000)
+uk_elec <- uk_elec [, c("year", "gor_dv", "elec_price")]
+
+## ensure its in $/MWh
+us_elec <- seds[, c("year", "us_state", "elec_price"), with = FALSE]
+us_elec$elec_price <- as.numeric(us_elec$elec_price)
+
+us_gas <- seds[, c("year", "us_state", "gas_price"), with = FALSE]
+us_gas$gas_price <- as.numeric(us_gas$gas_price)
+
+
+de_gas <- nrg %>%
+  group_by(year) %>%
+  summarise(
+    gas_price = mean(gas_price, na.rm = TRUE) * 1000
+  )
+de_gas$gas_price <- as.numeric(de_gas$gas_price)
+
+de_elec <- nrg %>%
+  group_by(year) %>%
+  summarise(
+    elec_price = mean(elec_price, na.rm = TRUE) * 1000
+  )
+de_elec$elec_price <- as.numeric(de_elec$elec_price)
+```
+
+```{r function for price projection, echo = FALSE}
+# ---- Required Packages ----
+if (!require(forecast)) install.packages("forecast")
+if (!require(dplyr)) install.packages("dplyr")
+library(forecast)
+library(dplyr)
+library(rugarch)
+
+# ---- Clean Data Function ----
+clean_data <- function(df, price_var, region_var = NULL) {
+    df[[price_var]] <- as.numeric(df[[price_var]])  # Ensure price column is numeric
+    
+    # If region_var is provided, use it, otherwise clean by year
+    if (!is.null(region_var)) {
+        df_clean <- df[complete.cases(df[[price_var]], df[[region_var]], df$year), ]
+    } else {
+        df_clean <- df[complete.cases(df[[price_var]], df$year), ]  # Clean by year only if no region
+    }
+    
+    return(df_clean)
+}
+
+forecast_arima <- function(df, price_var, region_var = NULL, years_ahead = 30, min_years = 5) {
+    
+    # If no region_var is provided or it's not in the dataframe, treat the whole data as one group
+    if (is.null(region_var) || !region_var %in% colnames(df)) {
+        # Aggregate by year for the entire dataset (no regional split)
+        df_clean <- clean_data(df, price_var)
+        
+        # Aggregate by year, calculate average price
+        region_data_agg <- aggregate(df_clean[[price_var]], 
+                                     by = list(df_clean$year), 
+                                     FUN = mean)
+        colnames(region_data_agg) <- c("year", "avg_price")
+        region_data_agg <- region_data_agg[order(region_data_agg$year), ]
+        
+        if (nrow(region_data_agg) >= min_years) {
+            price_ts <- ts(region_data_agg$avg_price, start = min(region_data_agg$year), frequency = 1)
+            arima_model <- auto.arima(price_ts, stepwise = FALSE, approximation = FALSE, trace = TRUE)
+            forecast_results <- forecast(arima_model, h = years_ahead)
+        } else {
+            warning("Not enough data to forecast for Germany")
+            forecast_results <- NULL
+        }
+    } else {
+        # Otherwise, if region_var is provided, loop over regions (for UK, US, etc.)
+        regions <- unique(df[[region_var]])
+        forecast_results <- list()
+        
+        for (region in regions) {
+            region_data <- df[df[[region_var]] == region, ]
+            region_data_clean <- clean_data(region_data, price_var, "year")
+            
+            # Aggregate by year, calculate average price
+            region_data_agg <- aggregate(region_data_clean[[price_var]], 
+                                         by = list(region_data_clean$year), 
+                                         FUN = mean)
+            colnames(region_data_agg) <- c("year", "avg_price")
+            region_data_agg <- region_data_agg[order(region_data_agg$year), ]
+            
+            if (nrow(region_data_agg) >= min_years) {
+                price_ts <- ts(region_data_agg$avg_price, start = min(region_data_agg$year), frequency = 1)
+                arima_model <- auto.arima(price_ts, stepwise = FALSE, approximation = FALSE, trace = TRUE)
+                forecast_results[[as.character(region)]] <- forecast(arima_model, h = years_ahead)
+            } else {
+                warning(paste("Not enough data to forecast for region:", region))
+            }
+        }
+    }
+    
+    return(forecast_results)
+}
+
+# ---- ARIMA + GARCH + Bootstrap Forecast (Gas) ----
+forecast_arima_garch_bootstrap <- function(df, price_var, region_var = NULL, years_ahead = 30, min_years = 5, n_paths = 100) {
+
+    # Ensure rugarch package is loaded
+    if (!require("rugarch")) {
+        install.packages("rugarch")
+        library(rugarch)
+    }
+
+    # If no region_var is provided or it's not in the dataframe, treat the whole data as one group
+    if (is.null(region_var) || !region_var %in% colnames(df)) {
+        # Aggregate by year for the entire dataset (no regional split)
+        df_clean <- clean_data(df, price_var)
+        
+        # Aggregate by year, calculate average price
+        region_data_agg <- aggregate(df_clean[[price_var]], 
+                                     by = list(df_clean$year), 
+                                     FUN = mean)
+        colnames(region_data_agg) <- c("year", "avg_price")
+        region_data_agg <- region_data_agg[order(region_data_agg$year), ]
+        
+        if (nrow(region_data_agg) >= min_years) {
+            price_ts <- ts(region_data_agg$avg_price, start = min(region_data_agg$year), frequency = 1)
+            
+            # Fit ARIMA model
+            arima_model <- auto.arima(price_ts, stepwise = FALSE, approximation = FALSE, trace = TRUE)
+            
+            # Print out the ARIMA model selection (for debugging)
+            print(arima_model)
+            
+            # Get residuals and fit GARCH model
+            garch_spec <- ugarchspec(variance.model = list(model = "sGARCH", garchOrder = c(1, 1)),
+                                     mean.model = list(armaOrder = arima_model$arma[c(1, 6)], include.mean = TRUE),
+                                     distribution.model = "norm")
+            garch_fit <- ugarchfit(garch_spec, residuals(arima_model))
+            
+            # Generate forecast using ARIMA and GARCH
+            arima_forecast <- forecast(arima_model, h = years_ahead)
+            garch_forecast <- ugarchforecast(garch_fit, n.ahead = years_ahead)
+            
+            # Combine the forecasts: ARIMA mean and GARCH volatility
+            forecast_results <- list(
+                arima_forecast = arima_forecast,
+                garch_forecast = garch_forecast
+            )
+        } else {
+            warning("Not enough data to forecast for the whole dataset")
+            forecast_results <- NULL
+        }
+    } else {
+        # If region_var is provided, loop over regions (for UK, US, etc.)
+        regions <- unique(df[[region_var]])
+        forecast_results <- list()
+        
+        for (region in regions) {
+            region_data <- df[df[[region_var]] == region, ]
+            region_data_clean <- clean_data(region_data, price_var, "year")
+            
+            # Aggregate by year, calculate average price
+            region_data_agg <- aggregate(region_data_clean[[price_var]], 
+                                         by = list(region_data_clean$year), 
+                                         FUN = mean)
+            colnames(region_data_agg) <- c("year", "avg_price")
+            region_data_agg <- region_data_agg[order(region_data_agg$year), ]
+            
+            if (nrow(region_data_agg) >= min_years) {
+                price_ts <- ts(region_data_agg$avg_price, start = min(region_data_agg$year), frequency = 1)
+                
+                # Fit ARIMA model
+                arima_model <- auto.arima(price_ts, stepwise = FALSE, approximation = FALSE, trace = TRUE)
+                
+                # Print out the ARIMA model selection (for debugging)
+                print(arima_model)
+                
+                # Get residuals and fit GARCH model
+                garch_spec <- ugarchspec(variance.model = list(model = "sGARCH", garchOrder = c(1, 1)),
+                                         mean.model = list(armaOrder = arima_model$arma[c(1, 6)], include.mean = TRUE),
+                                         distribution.model = "norm")
+                garch_fit <- ugarchfit(garch_spec, residuals(arima_model))
+                
+                # Generate forecast using ARIMA and GARCH
+                arima_forecast <- forecast(arima_model, h = years_ahead)
+                garch_forecast <- ugarchforecast(garch_fit, n.ahead = years_ahead)
+                
+                # Store the forecast results for each region
+                forecast_results[[as.character(region)]] <- list(
+                    arima_forecast = arima_forecast,
+                    garch_forecast = garch_forecast
+                )
+            } else {
+                warning(paste("Not enough data to forecast for region:", region))
+            }
+        }
+    }
+    
+    return(forecast_results)
+}
+
+        
+  
+
+# ---- Plot Function ----
+plot_forecast <- function(forecast_list, title) {
+    if (length(forecast_list) > 0) {
+        for (region in names(forecast_list)) {
+            plot(forecast_list[[region]],
+                 main = paste(title, "for", region),
+                 ylab = "Price (National Currency/MWh)",
+                 xlab = "Year")
+        }
+    } else {
+        print("No regions had enough data to forecast.")
+    }
+}
+
+
+# ---- Forecasting ----
+# Electricity (ARIMA Only)
+forecasted_DE_elec_prices <- forecast_arima(de_elec, "elec_price", 30)
+forecasted_UK_elec_prices <- forecast_arima(uk_elec, "elec_price", "gor_dv", 30)
+forecasted_US_elec_prices <- forecast_arima(us_elec, "elec_price", "us_state", 30)
+# Gas (ARIMA + Bootstrap)
+forecasted_UK_gas_prices <- forecast_arima_garch_bootstrap(uk_gas, "gas_price", "gor_dv", 30)
+forecasted_US_gas_prices <- forecast_arima_bootstrap(us_gas, "gas_price", "us_state", 30)
+forecasted_DE_gas_prices <- forecast_arima_garch_bootstrap(de_gas, "gas_price", 30)
+# ---- Plotting ----
+plot_forecast(forecasted_DE_elec_prices, "Forecasted DE Electricity Prices")
+plot_forecast(forecasted_DE_gas_prices, "Forecasted DE Gas Prices")
+plot_forecast(forecasted_UK_elec_prices, "Forecasted UK Electricity Prices")
+plot_forecast(forecasted_UK_gas_prices, "Forecasted UK Gas Prices")
+plot_forecast(forecasted_US_gas_prices, "Forecasted US Gas Prices")
+
+```
+
+### Projection for Consumption
+
+```{r future consumption, echo=FALSE}
+### simple growth rate for coefficents that need it 
+hhsize_growth_rate <- mean(diff(energy_data_uk$hhsize), na.rm = TRUE)
+projected_hhsize <- rep(tail(energy_data_uk$hhsize, 1) * (1 + hhsize_growth_rate)^(1:29),
+                        each = length(unique(energy_data_uk$weighted_decile)))
+income_growth_rate <- mean(diff(log(energy_data_uk$adjusted_income_2yr)), na.rm = TRUE)
+projected_income <- rep(tail(energy_data_uk$adjusted_income_2yr, 1) * (1 + income_growth_rate)^(1:29), 
+                        each = length(unique(energy_data_uk$weighted_decile)))
+```
+
+
+```{r prepare data, include = FALSE}
+DE_summary <- DE_summary %>%
+  pivot_wider(names_from = parameter, values_from = estimate)
+US_summary <- US_summary %>%
+  pivot_wider(names_from = parameter, values_from = estimate)
+UK_summary <- GB_summary %>%
+  pivot_wider(names_from = parameter, values_from = estimate)
+
+
+
+```
+```{r technology impacts, echo=FALSE}
+technology_impacts <- data.frame(
+        technology = c("solar", "smartphone", "internet", "renovation", "fuel_switch"),
+        elec_generation_mwh = c(2.5, 0.000, 0.000, 0.000, 0.000),   
+        elec_consumption_mwh = c(0.030, 0.05, 0.180, -0.500, 3.500),
+        gas_generation_mwh = c(0.000, 0.000, 0.000, 0.000, 0.000),  
+        gas_consumption_mwh = c(0.000, 0.000, 0.000, -0.200, -3.500) 
+) 
+
+```
+
+```{r Baseline Scenario function, include = FALSE}
+# Energy projection function that works for multiple countries
+project_energy_time <- function(consumption_data, tech_impacts, adoption_data, 
+                                country_name = "DEU",
+                                start_year = 2025, end_year = 2050,
+                                n_simulations = 100) {
+        
+        # Ensure correct data types
+        consumption_data <- consumption_data %>%
+                mutate(weighted_decile = as.integer(weighted_decile))
+        
+        # Function to run a single projection with enhanced randomness
+        single_projection <- function(seed) {
+                set.seed(seed)
+                
+                adoption_params <- adoption_data %>%
+                        mutate(
+                                technology = tolower(technology),
+                                weighted_decile = case_when(
+                                        quintile == "Quintile 1" ~ list(1:2),
+                                        quintile == "Quintile 2" ~ list(3:4),
+                                        quintile == "Quintile 3" ~ list(5:6),
+                                        quintile == "Quintile 4" ~ list(7:8),
+                                        quintile == "Quintile 5" ~ list(9:10)
+                                ),
+                                # Enhanced randomness for more visible confidence intervals
+                                country_max = pmin(1, pmax(0, country_max + rnorm(n(), 0, 0.08))),
+                                growth_rate = growth_rate + rnorm(n(), 0, 0.02),
+                                inflexion_year = inflexion_year + rnorm(n(), 0, 1.5)
+                        ) %>%
+                        unnest(weighted_decile) %>%
+                        # Force weighted_decile to be integer
+                        mutate(weighted_decile = as.integer(weighted_decile))
+                
+                # Get baseline for the last year
+                last_year <- max(consumption_data$year)
+                baseline <- consumption_data %>%
+                        filter(year == last_year)
+                
+                # Create time projection
+                years <- data.frame(projection_year = seq(start_year, end_year, by = 1))
+                
+                # Force identical types before join
+                results <- baseline %>%
+                        crossing(years) %>%
+                        crossing(technology = unique(tech_impacts$technology)) %>%
+                        # Force integer type before joining
+                        mutate(weighted_decile = as.integer(weighted_decile)) %>%
+                        left_join(adoption_params, by = c("weighted_decile", "technology")) %>%
+                        left_join(tech_impacts, by = "technology") %>%
+                        mutate(
+                                # Calculate adoption and impacts
+                                adoption_factor = country_max / (1 + exp(-growth_rate * (projection_year - inflexion_year))),
+                                tech_gas_impact = gas_consumption_mwh * adoption_factor,
+                                tech_elec_impact = elec_consumption_mwh * adoption_factor
+                        )
+                
+                # Aggregate results
+                aggregated_results <- results %>%
+                        group_by(weighted_decile, projection_year) %>%
+                        summarise(
+                                projected_gas = first(baseline_gas) + sum(tech_gas_impact, na.rm = TRUE),
+                                projected_elec = first(baseline_elec) + sum(tech_elec_impact, na.rm = TRUE),
+                                
+                                gas_price = first(gas_price),
+                                elec_price = first(elec_price),
+                                
+                                annual_gas_bill = projected_gas * gas_price,
+                                annual_elec_bill = projected_elec * elec_price,
+                                total_annual_bill = annual_gas_bill + annual_elec_bill,
+                                
+                                baseline_gas = first(baseline_gas),
+                                baseline_elec = first(baseline_elec),
+                                baseline_annual_gas_bill = baseline_gas * gas_price,
+                                baseline_annual_elec_bill = baseline_elec * elec_price,
+                                baseline_total_annual_bill = baseline_annual_gas_bill + baseline_annual_elec_bill,
+                                
+                                total_adoption_factor = sum(adoption_factor, na.rm = TRUE),
+                                .groups = 'drop'
+                        ) %>%
+                        # Add country identifier
+                        mutate(country = country_name)
+                
+                return(aggregated_results)
+        }
+        
+        # Run multiple simulations
+        message(paste("Running", n_simulations, "simulations for", country_name, "..."))
+        simulation_results <- list()
+        for(i in 1:n_simulations) {
+                if(i %% 10 == 0) message(sprintf("Completed %d of %d simulations", i, n_simulations))
+                simulation_results[[i]] <- single_projection(i)
+        }
+        
+        # Calculate confidence intervals
+        combined_results <- bind_rows(simulation_results, .id = "simulation") %>%
+                group_by(country, weighted_decile, projection_year) %>%
+                summarise(
+                        # Central values (using median for robustness)
+                        projected_gas = median(projected_gas),
+                        projected_elec = median(projected_elec),
+                        total_annual_bill = median(total_annual_bill),
+                        annual_gas_bill = median(annual_gas_bill),
+                        annual_elec_bill = median(annual_elec_bill),
+                        
+                        # Confidence intervals - using wider interval for visibility
+                        total_annual_bill_lower = quantile(total_annual_bill, 0.2),
+                        total_annual_bill_upper = quantile(total_annual_bill, 0.8),
+                        annual_gas_bill_lower = quantile(annual_gas_bill, 0.2),
+                        annual_gas_bill_upper = quantile(annual_gas_bill, 0.8),
+                        annual_elec_bill_lower = quantile(annual_elec_bill, 0.2),
+                        annual_elec_bill_upper = quantile(annual_elec_bill, 0.8),
+                        
+                        # Also add confidence intervals for consumption
+                        projected_gas_lower = quantile(projected_gas, 0.2),
+                        projected_gas_upper = quantile(projected_gas, 0.8),
+                        projected_elec_lower = quantile(projected_elec, 0.2),
+                        projected_elec_upper = quantile(projected_elec, 0.8),
+                        
+                        # Baselines (should be the same across all simulations)
+                        baseline_gas = first(baseline_gas),
+                        baseline_elec = first(baseline_elec),
+                        baseline_annual_gas_bill = first(baseline_annual_gas_bill),
+                        baseline_annual_elec_bill = first(baseline_annual_elec_bill),
+                        baseline_total_annual_bill = first(baseline_total_annual_bill),
+                        
+                        # Tracking adoption
+                        total_adoption_factor = median(total_adoption_factor),
+                        .groups = 'drop'
+                )
+        
+        return(combined_results)
+}
+
+# Run projections for all three countries
+deu_projections <- project_energy_time(
+        consumption_data = DEU_consumption,
+        tech_impacts = technology_impacts,
+        adoption_data = DE_summary,
+        country_name = "DEU",
+        start_year = 2025,
+        end_year = 2050,
+        n_simulations = 100
+)
+
+uk_projections <- project_energy_time(
+        consumption_data = UK_consumption,
+        tech_impacts = technology_impacts,
+        adoption_data = UK_summary,
+        country_name = "UK",
+        start_year = 2025,
+        end_year = 2050,
+        n_simulations = 100
+)
+
+us_projections <- project_energy_time(
+        consumption_data = US_consumption,
+        tech_impacts = technology_impacts,
+        adoption_data = US_summary,
+        country_name = "US",
+        start_year = 2025,
+        end_year = 2050,
+        n_simulations = 100
+)
+
+# Function to prepare historical data in consistent format
+prepare_historical_data <- function(consumption_data, country_name) {
+        consumption_data %>%
+                mutate(
+                        country = country_name,
+                        weighted_decile = as.integer(weighted_decile),
+                        total_consumption = baseline_gas + baseline_elec,
+                        annual_gas_bill = baseline_gas * gas_price,
+                        annual_elec_bill = baseline_elec * elec_price,
+                        total_annual_bill = annual_gas_bill + annual_elec_bill
+                ) %>%
+                rename(projection_year = year) %>%
+                select(country, projection_year, weighted_decile,
+                       baseline_gas, baseline_elec, total_consumption,
+                       annual_gas_bill, annual_elec_bill, total_annual_bill)
+}
+
+# Prepare historical data for all countries
+historical_deu <- prepare_historical_data(DEU_consumption, "DEU")
+historical_uk <- prepare_historical_data(UK_consumption, "UK")
+historical_us <- prepare_historical_data(US_consumption, "US")
+
+# Combine historical data
+historical_combined <- bind_rows(historical_deu, historical_uk, historical_us) %>%
+        pivot_longer(
+                cols = c(baseline_gas, baseline_elec, total_consumption,
+                         annual_gas_bill, annual_elec_bill, total_annual_bill),
+                names_to = "metric",
+                values_to = "value"
+        ) %>%
+        mutate(
+                type = case_when(
+                        metric %in% c("baseline_gas", "baseline_elec", "total_consumption") ~ "Consumption (MWh)",
+                        TRUE ~ "Annual Bills (€)"
+                ),
+                source = case_when(
+                        metric %in% c("baseline_gas", "annual_gas_bill") ~ "Gas",
+                        metric %in% c("baseline_elec", "annual_elec_bill") ~ "Electricity",
+                        TRUE ~ "Total"
+                )
+        )
+
+# Prepare projection data in same format
+prepare_projection_data <- function(projection_data) {
+        # Calculate total consumption
+        projection_data %>%
+                mutate(
+                        projected_total = projected_gas + projected_elec,
+                        projected_total_lower = projected_gas_lower + projected_elec_lower,
+                        projected_total_upper = projected_gas_upper + projected_elec_upper
+                ) %>%
+                # Reshape for visualization
+                pivot_longer(
+                        cols = c(
+                                # Consumption columns
+                                projected_gas, projected_elec, projected_total,
+                                projected_gas_lower, projected_elec_lower, projected_total_lower,
+                                projected_gas_upper, projected_elec_upper, projected_total_upper,
+                                # Bill columns
+                                annual_gas_bill, annual_elec_bill, total_annual_bill,
+                                annual_gas_bill_lower, annual_elec_bill_lower, total_annual_bill_lower,
+                                annual_gas_bill_upper, annual_elec_bill_upper, total_annual_bill_upper
+                        ),
+                        names_to = "metric",
+                        values_to = "value"
+                ) %>%
+                mutate(
+                        # Categorize by type
+                        type = case_when(
+                                grepl("projected", metric) ~ "Consumption (MWh)",
+                                grepl("bill", metric) ~ "Annual Bills (€)"
+                        ),
+                        # Categorize by source
+                        source = case_when(
+                                grepl("gas", metric) ~ "Gas",
+                                grepl("elec", metric) ~ "Electricity",
+                                TRUE ~ "Total"
+                        ),
+                        # Identify central values vs confidence intervals
+                        ci_type = case_when(
+                                grepl("lower", metric) ~ "lower",
+                                grepl("upper", metric) ~ "upper",
+                                TRUE ~ "central"
+                        )
+                )
+}
+
+# Process all projection data
+projection_combined <- bind_rows(
+        prepare_projection_data(deu_projections),
+        prepare_projection_data(uk_projections),
+        prepare_projection_data(us_projections)
+)
+
+# Function to create visualization for a single country
+create_country_vis <- function(country_code) {
+        # Filter data for the selected country
+        country_historical <- historical_combined %>% 
+                filter(country == country_code)
+        
+        country_projections <- projection_combined %>% 
+                filter(country == country_code)
+        
+        # Create the plot
+        ggplot() +
+                # Historical data
+                geom_line(data = country_historical,
+                          aes(x = projection_year, 
+                              y = value,
+                              color = factor(weighted_decile),
+                              group = weighted_decile),
+                          size = 1) +
+                # Transition point
+                geom_point(data = country_historical %>% 
+                                   filter(projection_year == max(projection_year)),
+                           aes(x = projection_year,
+                               y = value,
+                               color = factor(weighted_decile)),
+                           size = 2) +
+                # Projections with confidence intervals
+                geom_ribbon(data = country_projections %>% 
+                                    filter(ci_type != "central") %>%
+                                    pivot_wider(names_from = ci_type, values_from = value, values_fill = NA),
+                            aes(x = projection_year,
+                                ymin = lower,
+                                ymax = upper,
+                                fill = factor(weighted_decile),
+                                group = weighted_decile),
+                            alpha = 0.3,  # Increased for visibility
+                            color = NA) +  # Remove ribbon border
+                # Projected central lines
+                geom_line(data = country_projections %>% 
+                                  filter(ci_type == "central"),
+                          aes(x = projection_year,
+                              y = value,
+                              color = factor(weighted_decile),
+                              group = weighted_decile),
+                          linetype = "dashed",
+                          size = 1) +
+                # Transition line
+                geom_vline(xintercept = 2025, 
+                           linetype = "dashed", 
+                           color = "gray50") +
+                # Faceting
+                facet_grid(type ~ source, scales = "free_y") +
+                # Customize appearance
+                labs(
+                        title = paste(country_code, "- Historical and Projected Energy Consumption and Bills"),
+                        subtitle = "Solid lines = historical data, Dashed lines = projections with 20-80% confidence intervals",
+                        x = "Year",
+                        y = NULL,
+                        color = "Income Decile",
+                        fill = "Income Decile"
+                ) +
+                theme_minimal() +
+                scale_color_viridis_d() +
+                scale_fill_viridis_d() +
+                scale_y_continuous(limits = c(0, NA), expand = c(0, 0)) +
+                theme(
+                        legend.position = "right",
+                        plot.title = element_text(face = "bold"),
+                        plot.subtitle = element_text(size = 9),
+                        strip.text = element_text(face = "bold"),
+                        panel.spacing = unit(2, "lines"),
+                        axis.text = element_text(margin = margin(t = 5, r = 5))
+                )
+}
+
+# Create visualizations for each country
+deu_vis <- create_country_vis("DEU")
+uk_vis <- create_country_vis("UK") 
+us_vis <- create_country_vis("US")
+
+# Display the visualizations
+print(deu_vis)
+print(uk_vis)
+print(us_vis)
+
+# Compare results across countries - summary statistics
+country_comparison <- bind_rows(
+        deu_projections %>% 
+                filter(projection_year %in% c(2025, 2050)) %>%
+                select(country, weighted_decile, projection_year, projected_gas, projected_elec, 
+                       annual_gas_bill, annual_elec_bill, total_annual_bill),
+        uk_projections %>% 
+                filter(projection_year %in% c(2025, 2050)) %>%
+                select(country, weighted_decile, projection_year, projected_gas, projected_elec, 
+                       annual_gas_bill, annual_elec_bill, total_annual_bill),
+        us_projections %>% 
+                filter(projection_year %in% c(2025, 2050)) %>%
+                select(country, weighted_decile, projection_year, projected_gas, projected_elec, 
+                       annual_gas_bill, annual_elec_bill, total_annual_bill)
+) %>%
+        group_by(country, weighted_decile) %>%
+        pivot_wider(
+                names_from = projection_year,
+                values_from = c(projected_gas, projected_elec, annual_gas_bill, annual_elec_bill, total_annual_bill)
+        ) %>%
+        mutate(
+                gas_change_pct = (projected_gas_2050 - projected_gas_2025) / projected_gas_2025 * 100,
+                elec_change_pct = (projected_elec_2050 - projected_elec_2025) / projected_elec_2025 * 100,
+                bill_change_pct = (total_annual_bill_2050 - total_annual_bill_2025) / total_annual_bill_2025 * 100
+        ) %>%
+        arrange(country, weighted_decile)
+
+print("Cross-Country Comparison:")
+print(country_comparison)
+
+
+# Save projection results
+saveRDS(deu_projections, "deu_projections.rds")
+saveRDS(uk_projections, "uk_projections.rds")
+saveRDS(us_projections, "us_projections.rds")
+
+# Save visualizations
+ggsave("deu_energy_projection.png", deu_vis, width = 12, height = 8, dpi = 300)
+ggsave("uk_energy_projection.png", uk_vis, width = 12, height = 8, dpi = 300)
+ggsave("us_energy_projection.png", us_vis, width = 12, height = 8, dpi = 300)
+
+# Save summary statistics
+write.csv(country_comparison, "country_comparison.csv", row.names = FALSE)
+```
+
+```{r Baseline Scenario Improved, echo = FALSE}
+# Fix issue with data
+DEU_consumption <- DEU_consumption %>% 
+        filter(!year == 2010)
+UK_consumption <- UK_consumption %>%
+        filter(!year == 2009)
+
+# Enhanced energy projection function with improved baseline methodologies
+project_energy_time_enhanced <- function(consumption_data, tech_impacts, adoption_data, 
+                                         household_projections = NULL,
+                                         country_name = "DEU",
+                                         start_year = 2025, end_year = 2050,
+                                         n_simulations = 100,
+                                         regional_variation = TRUE,
+                                         include_demographics = TRUE) {
+        
+        # Ensure correct data types
+        consumption_data <- consumption_data %>%
+                mutate(weighted_decile = as.integer(weighted_decile))
+        
+        # 1. Smoothing approach with conversion to numeric
+        historical_trend <- consumption_data %>%
+                group_by(weighted_decile) %>%
+                arrange(year) %>%
+                mutate(
+                        # Convert the smoothed output to numeric vectors
+                        smoothed_elec = as.numeric(stats::smooth(baseline_elec, kind = "3R")),
+                        smoothed_gas = as.numeric(stats::smooth(baseline_gas, kind = "3R"))
+                ) %>%
+                ungroup()
+        
+        # Get last year of historical data for baseline
+        last_year <- max(consumption_data$year)
+        baseline <- historical_trend %>%
+                filter(year == last_year) %>%
+                # Use smoothed values for projection base
+                mutate(
+                        baseline_elec = smoothed_elec,
+                        baseline_gas = smoothed_gas
+                )
+        
+        # Function to run a single projection with enhanced modeling
+        single_projection <- function(seed) {
+                set.seed(seed)
+                
+                # 2. Enhanced adoption parameters with regional variation
+                adoption_params <- adoption_data %>%
+                        mutate(
+                                technology = tolower(technology),
+                                weighted_decile = case_when(
+                                        quintile == "Quintile 1" ~ list(1:2),
+                                        quintile == "Quintile 2" ~ list(3:4),
+                                        quintile == "Quintile 3" ~ list(5:6),
+                                        quintile == "Quintile 4" ~ list(7:8),
+                                        quintile == "Quintile 5" ~ list(9:10)
+                                ),
+                                # Add regional variation if enabled
+                                region_factor = if(regional_variation) {
+                                        # Simulate regional differences in adoption
+                                        sample(c(0.85, 0.95, 1.0, 1.05, 1.15), n(), replace = TRUE,
+                                               prob = c(0.2, 0.3, 0.3, 0.15, 0.05))
+                                } else {
+                                        1.0  # No regional variation
+                                },
+                                # Income-based adoption modification
+                                income_factor = case_when(
+                                        quintile == "Quintile 1" ~ 0.8,  # Lower income adopts slower
+                                        quintile == "Quintile 2" ~ 0.9,
+                                        quintile == "Quintile 3" ~ 1.0,  # Middle income is baseline
+                                        quintile == "Quintile 4" ~ 1.1,
+                                        quintile == "Quintile 5" ~ 1.2   # Higher income adopts faster
+                                ),
+                                # Technology saturation - not all households will adopt
+                                # Different max adoption rates by technology and income
+                                adjusted_max = pmin(1, country_max * income_factor * region_factor),
+                                
+                                # Add random variation with income-dependent noise
+                                # Higher income has more variation in adoption patterns
+                                variation_factor = case_when(
+                                        quintile == "Quintile 1" ~ 0.04,
+                                        quintile == "Quintile 2" ~ 0.05,
+                                        quintile == "Quintile 3" ~ 0.06,
+                                        quintile == "Quintile 4" ~ 0.07,
+                                        quintile == "Quintile 5" ~ 0.08
+                                ),
+                                
+                                # Apply variations
+                                country_max = pmin(1, pmax(0, adjusted_max + rnorm(n(), 0, variation_factor))),
+                                growth_rate = growth_rate * income_factor + rnorm(n(), 0, 0.02),
+                                inflexion_year = inflexion_year - (log(income_factor) * 5) + rnorm(n(), 0, 1.5)
+                        ) %>%
+                        unnest(weighted_decile) %>%
+                        # Force weighted_decile to be integer
+                        mutate(weighted_decile = as.integer(weighted_decile))
+                
+                # Create time projection
+                years <- data.frame(projection_year = seq(start_year, end_year, by = 1))
+                
+                # 3. Add demographic effects if enabled
+                if(include_demographics && !is.null(household_projections)) {
+                        # Join with household size projections to adjust consumption
+                        years <- years %>%
+                                left_join(household_projections, by = c("projection_year" = "year")) %>%
+                                mutate(
+                                        # Default to no change if missing
+                                        household_size_factor = if_else(is.na(household_size_factor), 1.0, household_size_factor)
+                                )
+                } else {
+                        # No demographic adjustment
+                        years <- years %>%
+                                mutate(household_size_factor = 1.0)
+                }
+                
+                # Calculate technology impacts with enhanced modeling
+                results <- baseline %>%
+                        crossing(years) %>%
+                        crossing(technology = unique(tech_impacts$technology)) %>%
+                        # Force integer type before joining
+                        mutate(weighted_decile = as.integer(weighted_decile)) %>%
+                        left_join(adoption_params, by = c("weighted_decile", "technology")) %>%
+                        left_join(tech_impacts, by = "technology") %>%
+                        group_by(weighted_decile, projection_year) %>%
+                        # 4. Track technology effects separately
+                        mutate(
+                                year_in_projection = projection_year - min(projection_year),
+                                random_walk = cumsum(rnorm(n(), 0, 0.01)),  # Add autocorrelation
+                                                                raw_adoption = country_max / (1 + exp(-growth_rate * (projection_year - inflexion_year))),
+                                
+                                adoption_factor = pmin(country_max, pmax(0, raw_adoption + random_walk)),
+                                
+                                # 5. Natural efficiency improvements in baseline technologies
+                                baseline_efficiency_factor = 1 - (0.003 * year_in_projection),  # ~0.3% annual efficiency gain
+                                
+                                tech_gas_impact = gas_consumption_mwh * adoption_factor,
+                                tech_elec_impact = elec_consumption_mwh * adoption_factor,
+                                
+                                tech_id = paste(technology, row_number(), sep = "_")
+                        ) %>%
+                        ungroup()
+                
+                aggregated_results <- results %>%
+                        group_by(weighted_decile, projection_year) %>%
+                        summarise(
+                                # Apply household size factor and baseline efficiency to consumption
+                                household_size_factor = first(household_size_factor),
+                                baseline_efficiency_factor = first(baseline_efficiency_factor),
+                                
+                                projected_gas = (first(baseline_gas) * baseline_efficiency_factor * household_size_factor) +
+                                        sum(tech_gas_impact, na.rm = TRUE),
+                                projected_elec = (first(baseline_elec) * baseline_efficiency_factor * household_size_factor) +
+                                        sum(tech_elec_impact, na.rm = TRUE),
+                                
+                                projected_gas = pmax(0, projected_gas),
+                                projected_elec = pmax(0, projected_elec),
+                                
+                                gas_price = first(gas_price),
+                                elec_price = first(elec_price),
+                                
+                                annual_gas_bill = projected_gas * gas_price,
+                                annual_elec_bill = projected_elec * elec_price,
+                                total_annual_bill = annual_gas_bill + annual_elec_bill,
+                                
+                                baseline_gas = first(baseline_gas),
+                                baseline_elec = first(baseline_elec),
+                                baseline_annual_gas_bill = baseline_gas * gas_price,
+                                baseline_annual_elec_bill = baseline_elec * elec_price,
+                                baseline_total_annual_bill = baseline_annual_gas_bill + baseline_annual_elec_bill,
+                                
+                                total_adoption_factor = sum(adoption_factor, na.rm = TRUE),
+                                unique_technologies = n_distinct(tech_id),
+                                .groups = 'drop'
+                        ) %>%
+                        # Add country identifier
+                        mutate(country = country_name)
+                
+                return(aggregated_results)
+        }
+        
+        message(paste("Running", n_simulations, "simulations for", country_name, "..."))
+        simulation_results <- list()
+        pb <- txtProgressBar(min = 0, max = n_simulations, style = 3)  # Better progress bar
+        for(i in 1:n_simulations) {
+                simulation_results[[i]] <- single_projection(i)
+                setTxtProgressBar(pb, i)
+        }
+        close(pb)
+        
+        combined_results <- bind_rows(simulation_results, .id = "simulation") %>%
+                group_by(country, weighted_decile, projection_year) %>%
+                summarise(
+                        projected_gas = median(projected_gas),
+                        projected_elec = median(projected_elec),
+                        total_annual_bill = median(total_annual_bill),
+                        annual_gas_bill = median(annual_gas_bill),
+                        annual_elec_bill = median(annual_elec_bill),
+
+                        total_annual_bill_lower = quantile(total_annual_bill, 0.1),
+                        total_annual_bill_upper = quantile(total_annual_bill, 0.9),
+                        annual_gas_bill_lower = quantile(annual_gas_bill, 0.1),
+                        annual_gas_bill_upper = quantile(annual_gas_bill, 0.9),
+                        annual_elec_bill_lower = quantile(annual_elec_bill, 0.1),
+                        annual_elec_bill_upper = quantile(annual_elec_bill, 0.9),
+                        
+                        projected_gas_lower = quantile(projected_gas, 0.1),
+                        projected_gas_upper = quantile(projected_gas, 0.9),
+                        projected_elec_lower = quantile(projected_elec, 0.1),
+                        projected_elec_upper = quantile(projected_elec, 0.9),
+                        
+                        projected_gas_sd = sd(projected_gas),
+                        projected_elec_sd = sd(projected_elec),
+                        total_annual_bill_sd = sd(total_annual_bill),
+                        
+                        baseline_gas = first(baseline_gas),
+                        baseline_elec = first(baseline_elec),
+                        baseline_annual_gas_bill = first(baseline_annual_gas_bill),
+                        baseline_annual_elec_bill = first(baseline_annual_elec_bill),
+                        baseline_total_annual_bill = first(baseline_total_annual_bill),
+                        
+                        total_adoption_factor = median(total_adoption_factor),
+                        avg_technologies = median(unique_technologies),
+                        .groups = 'drop'
+                )
+        
+        model_metrics <- data.frame(
+                country = country_name,
+                n_simulations = n_simulations,
+                include_demographics = include_demographics,
+                regional_variation = regional_variation,
+                convergence_metric = sd(sapply(simulation_results, function(x) mean(x$total_annual_bill))),
+                simulation_variability = mean(combined_results$total_annual_bill_sd),
+                simulation_time = Sys.time()
+        )
+        
+        list(
+                projections = combined_results,
+                model_metrics = model_metrics
+        )
+}
+
+create_household_projection <- function(country, start_year = 2025, end_year = 2050) {
+        annual_change <- case_when(
+                country == "DEU" ~ -0.004,  # Declining household size
+                country == "UK" ~ -0.003,   # Slow decline
+                country == "US" ~ -0.002    # Very slow decline
+        )
+        
+        tibble(
+                country = country,
+                year = start_year:end_year,
+                household_size_factor = 1 + annual_change * (year - start_year)
+        )
+}
+
+run_all_countries <- function() {
+        # Prepare country-specific household projections
+        deu_households <- create_household_projection("DEU", 2025, 2050)
+        uk_households <- create_household_projection("UK", 2025, 2050)
+        us_households <- create_household_projection("US", 2025, 2050)
+        
+        # Germany
+        message("Running Germany projections...")
+        deu_enhanced <- project_energy_time_enhanced(
+                consumption_data = DEU_consumption,
+                tech_impacts = technology_impacts,
+                adoption_data = DE_summary,
+                household_projections = deu_households,
+                country_name = "DEU",
+                start_year = 2025,
+                end_year = 2050,
+                n_simulations = 100,
+                regional_variation = TRUE,
+                include_demographics = TRUE
+        )
+        
+        # UK
+        message("Running UK projections...")
+        uk_enhanced <- project_energy_time_enhanced(
+                consumption_data = UK_consumption,
+                tech_impacts = technology_impacts,
+                adoption_data = UK_summary,
+                household_projections = uk_households,
+                country_name = "UK",
+                start_year = 2025,
+                end_year = 2050,
+                n_simulations = 100,
+                regional_variation = TRUE,
+                include_demographics = TRUE
+        )
+        
+        # US
+        message("Running US projections...")
+        us_enhanced <- project_energy_time_enhanced(
+                consumption_data = US_consumption,
+                tech_impacts = technology_impacts,
+                adoption_data = US_summary,
+                household_projections = us_households,
+                country_name = "US",
+                start_year = 2025,
+                end_year = 2050,
+                n_simulations = 100,
+                regional_variation = TRUE,
+                include_demographics = TRUE
+        )
+        
+        return(list(
+                DEU = deu_enhanced,
+                UK = uk_enhanced,
+                US = us_enhanced
+        ))
+}
+
+# Run projections for all countries
+all_country_results <- run_all_countries()
+
+# Extract projection data for academic presentation
+deu_projections <- all_country_results$DEU$projections
+uk_projections <- all_country_results$UK$projections
+us_projections <- all_country_results$US$projections
+
+# Combine all results
+all_projections <- bind_rows(
+        deu_projections,
+        uk_projections,
+        us_projections
+)
+
+# Function to create enhanced visualization
+create_enhanced_vis <- function(projections, historical_data, country_code) {
+        # Prepare historical data
+        historical <- historical_data %>%
+                filter(country == country_code) %>%
+                mutate(
+                        type = case_when(
+                                metric %in% c("baseline_gas", "baseline_elec", "total_consumption") ~ "Consumption (MWh)",
+                                TRUE ~ "Annual Bills (€)"
+                        ),
+                        source = case_when(
+                                metric %in% c("baseline_gas", "annual_gas_bill") ~ "Gas",
+                                metric %in% c("baseline_elec", "annual_elec_bill") ~ "Electricity",
+                                TRUE ~ "Total"
+                        )
+                )
+        
+        # Prepare projection data
+        projection <- projections %>%
+                filter(country == country_code) %>%
+                mutate(
+                        projected_total = projected_gas + projected_elec,
+                        projected_total_lower = projected_gas_lower + projected_elec_lower,
+                        projected_total_upper = projected_gas_upper + projected_elec_upper
+                ) %>%
+                pivot_longer(
+                        cols = c(
+                                # Consumption columns
+                                projected_gas, projected_elec, projected_total,
+                                projected_gas_lower, projected_elec_lower, projected_total_lower,
+                                projected_gas_upper, projected_elec_upper, projected_total_upper,
+                                # Bill columns
+                                annual_gas_bill, annual_elec_bill, total_annual_bill,
+                                annual_gas_bill_lower, annual_elec_bill_lower, total_annual_bill_lower,
+                                annual_gas_bill_upper, annual_elec_bill_upper, total_annual_bill_upper
+                        ),
+                        names_to = "metric",
+                        values_to = "value"
+                ) %>%
+                mutate(
+                        type = case_when(
+                                grepl("projected", metric) ~ "Consumption (MWh)",
+                                TRUE ~ "Annual Bills (National Currency)"
+                        ),
+                        source = case_when(
+                                grepl("gas", metric) ~ "Gas",
+                                grepl("elec", metric) ~ "Electricity",
+                                TRUE ~ "Total"
+                        ),
+                        ci_type = case_when(
+                                grepl("lower", metric) ~ "lower",
+                                grepl("upper", metric) ~ "upper",
+                                TRUE ~ "central"
+                        )
+                )
+        
+        # Create visualization
+        ggplot() +
+                # Historical data
+                geom_line(data = historical,
+                          aes(x = projection_year, 
+                              y = value,
+                              color = factor(weighted_decile),
+                              group = weighted_decile),
+                          size = 1) +
+                # Transition point
+                geom_point(data = historical %>% 
+                                   filter(projection_year == max(projection_year)),
+                           aes(x = projection_year,
+                               y = value,
+                               color = factor(weighted_decile)),
+                           size = 2) +
+                # Projections with confidence intervals
+                geom_ribbon(data = projection %>% 
+                                    filter(ci_type != "central") %>%
+                                    pivot_wider(names_from = ci_type, values_from = value, values_fill = NA),
+                            aes(x = projection_year,
+                                ymin = lower,
+                                ymax = upper,
+                                fill = factor(weighted_decile),
+                                group = weighted_decile),
+                            alpha = 0.3, 
+                            color = NA) +
+                # Projected central lines
+                geom_line(data = projection %>% 
+                                  filter(ci_type == "central"),
+                          aes(x = projection_year,
+                              y = value,
+                              color = factor(weighted_decile),
+                              group = weighted_decile),
+                          linetype = "dashed",
+                          size = 1) +
+                # Transition line
+                geom_vline(xintercept = 2025, 
+                           linetype = "dashed", 
+                           color = "gray50") +
+                # Faceting
+                facet_grid(type ~ source, scales = "free_y") +
+                # Customize appearance
+                labs(
+                        title = paste(country_code, "- Enhanced Baseline Projection"),
+                        subtitle = "Includes demographic effects, regional variation, and natural efficiency improvements",
+                        x = "Year",
+                        y = NULL,
+                        color = "Income Decile",
+                        fill = "Income Decile"
+                ) +
+                theme_minimal() +
+                scale_color_viridis_d() +
+                scale_fill_viridis_d() +
+                scale_y_continuous(limits = c(0, NA), expand = c(0, 0)) +
+                theme(
+                        legend.position = "right",
+                        plot.title = element_text(face = "bold"),
+                        plot.subtitle = element_text(size = 9),
+                        strip.text = element_text(face = "bold"),
+                        panel.spacing = unit(2, "lines")
+                )
+}
+
+deu_enhanced_vis <- create_enhanced_vis(
+        deu_projections, 
+        historical_combined, 
+        "DEU"
+)
+
+us_enhanced_vis <- create_enhanced_vis(
+        us_projections,  
+        historical_combined, 
+        "US"
+)
+
+uk_enhanced_vis <- create_enhanced_vis(
+        uk_projections,  # Fixed: using the correct variable
+        historical_combined, 
+        "UK"
+)
+
+# Display the enhanced visualization
+print(deu_enhanced_vis)
+print(uk_enhanced_vis)
+print(us_enhanced_vis)
+
+# Sensitivity analysis - run multiple scenarios
+run_sensitivity_analysis <- function(country_data, tech_data, adoption_data, country_name) {
+        # Define scenarios
+        scenarios <- expand.grid(
+                regional_variation = c(TRUE, FALSE),
+                demographics = c(TRUE, FALSE),
+                efficiency_improvement = c("High", "Medium", "Low")
+        )
+        
+        # Adjust household projections based on scenarios
+        household_proj <- case_when(
+                country_name == "DEU" ~ deu_households,
+                country_name == "UK" ~ uk_households,
+                country_name == "US" ~ us_households
+        )
+        
+        # Run all scenarios
+        scenario_results <- list()
+        for(i in 1:nrow(scenarios)) {
+                # Get scenario parameters
+                regional <- scenarios$regional_variation[i]
+                demographics <- scenarios$demographics[i]
+                efficiency <- scenarios$efficiency_improvement[i]
+                
+                # Run projection with this scenario
+                message(paste("Running scenario", i, "of", nrow(scenarios)))
+                
+                # Adjust tech impacts based on efficiency scenario
+                modified_tech <- tech_data %>%
+                        mutate(
+                                efficiency_factor = case_when(
+                                        efficiency == "High" ~ 1.2,
+                                        efficiency == "Medium" ~ 1.0,
+                                        efficiency == "Low" ~ 0.8
+                                ),
+                                gas_consumption_mwh = gas_consumption_mwh * efficiency_factor,
+                                elec_consumption_mwh = elec_consumption_mwh * efficiency_factor
+                        )
+                
+                # Run with reduced simulations for speed
+                result <- project_energy_time_enhanced(
+                        consumption_data = country_data,
+                        tech_impacts = modified_tech,
+                        adoption_data = adoption_data,
+                        household_projections = household_proj,
+                        country_name = country_name,
+                        start_year = 2025,
+                        end_year = 2050,
+                        n_simulations = 50,  # Reduced for sensitivity analysis
+                        regional_variation = regional,
+                        include_demographics = demographics
+                )
+                
+                # Add scenario details
+                result$projections$scenario_id <- i
+                result$projections$regional_variation <- regional
+                result$projections$demographics <- demographics
+                result$projections$efficiency <- efficiency
+                
+                scenario_results[[i]] <- result$projections
+        }
+        
+        # Combine all scenarios
+        all_scenarios <- bind_rows(scenario_results)
+        
+        # Return with scenario metadata
+        list(
+                results = all_scenarios,
+                scenarios = scenarios
+        )
+}
+
+# Run sensitivity analysis for Germany
+deu_sensitivity <- run_sensitivity_analysis(
+        DEU_consumption, 
+        technology_impacts, 
+        DE_summary, 
+        "DEU"
+)
+
+uk_sensitivity <- run_sensitivity_analysis(
+        UK_consumption, 
+        technology_impacts, 
+        UK_summary, 
+        "UK"
+)
+
+us_sensitivity <- run_sensitivity_analysis(
+        US_consumption, 
+        technology_impacts, 
+        US_summary, 
+        "US"
+)
+
+# Summarize sensitivity analysis
+sensitivity_summary <- deu_sensitivity$results %>%
+        filter(projection_year == 2050) %>%
+        group_by(scenario_id, regional_variation, demographics, efficiency, weighted_decile) %>%
+        summarise(
+                total_consumption = projected_gas + projected_elec,
+                total_bill = total_annual_bill,
+                .groups = 'drop'
+        ) %>%
+        group_by(scenario_id, regional_variation, demographics, efficiency) %>%
+        summarise(
+                avg_consumption = mean(total_consumption),
+                avg_bill = mean(total_bill),
+                .groups = 'drop'
+        ) %>%
+        arrange(desc(avg_consumption))
+
+# Display sensitivity results
+print("Sensitivity Analysis Results:")
+print(sensitivity_summary)
+
+saveRDS(all_country_results, "all_country_enhanced_projections.rds")
+
+# Or save individual country results
+saveRDS(all_country_results$DEU, "deu_enhanced_projections.rds")
+saveRDS(all_country_results$US, "us_enhanced_projections.rds")
+saveRDS(all_country_results$UK, "uk_enhanced_projections.rds")
+
+
+saveRDS(deu_sensitivity, "deu_sensitivity_analysis.rds")
+ggsave("deu_enhanced_projection.png", deu_enhanced_vis, width = 12, height = 8, dpi = 300)
+ggsave("uk_enhanced_projection.png", uk_enhanced_vis, width = 12, height = 8, dpi = 300)
+ggsave("us_enhanced_projection.png", us_enhanced_vis, width = 12, height = 8, dpi = 300)
+
+
+#-----------------------------------
+# ADDED: Academic Presentation Code
+#-----------------------------------
+
+# Load required packages for academic tables
+library(fixest)
+library(modelsummary)
+library(kableExtra)
+
+# 1. Create regression-style tables with fixed effects
+regression_data <- all_projections %>%
+        mutate(
+                # Create decile categories
+                income_group = case_when(
+                        weighted_decile <= 3 ~ "Low",
+                        weighted_decile <= 7 ~ "Middle",
+                        TRUE ~ "High"
+                ),
+                # Create period indicators
+                period = case_when(
+                        projection_year <= 2030 ~ "Near-term (2025-2030)",
+                        projection_year <= 2040 ~ "Mid-term (2031-2040)",
+                        TRUE ~ "Long-term (2041-2050)"
+                ),
+                # Calculate changes from baseline
+                elec_change = projected_elec - baseline_elec,
+                gas_change = projected_gas - baseline_gas,
+                total_energy_change = elec_change + gas_change,
+                bill_change = total_annual_bill - baseline_total_annual_bill,
+                pct_bill_change = (total_annual_bill / baseline_total_annual_bill - 1) * 100
+        )
+
+# Run regression models
+models <- list(
+        "Electricity" = feols(projected_elec ~ income_group + period | country, regression_data),
+        "Gas" = feols(projected_gas ~ income_group + period | country, regression_data),
+        "Total Bill" = feols(total_annual_bill ~ income_group + period | country, regression_data),
+        "% Bill Change" = feols(pct_bill_change ~ income_group + period | country, regression_data)
+)
+
+# Create regression table (Model 1)
+table1 <- modelsummary(models, 
+                       stars = TRUE,
+                       title = "Energy Consumption and Bills by Income Group and Period",
+                       coef_map = c(
+                               "income_groupLow" = "Low Income",
+                               "income_groupMiddle" = "Middle Income",
+                               "income_groupHigh" = "High Income (ref.)",
+                               "periodNear-term (2025-2030)" = "2025-2030",
+                               "periodMid-term (2031-2040)" = "2031-2040",
+                               "periodLong-term (2041-2050)" = "2041-2050"
+                       ),
+                       gof_omit = "IC|Log|F|RMSE")
+
+# 2. Panel data fixed effects model (Model 2)
+panel_models <- list(
+        "Gas\nConsumption" = feols(projected_gas ~ period:income_group | country + weighted_decile, regression_data),
+        "Electricity\nConsumption" = feols(projected_elec ~ period:income_group | country + weighted_decile, regression_data),
+        "Energy\nBill" = feols(total_annual_bill ~ period:income_group | country + weighted_decile, regression_data),
+        "Bill\nChange %" = feols(pct_bill_change ~ period:income_group | country + weighted_decile, regression_data)
+)
+
+table2 <- modelsummary(panel_models, 
+                       stars = TRUE,
+                       title = "Energy Consumption and Bills - Panel Data with Fixed Effects",
+                       coef_omit = "Int",
+                       gof_omit = "IC|Log|F|RMSE")
+
+# 3. Point estimates with confidence intervals (most common in energy economics)
+point_estimates <- all_projections %>%
+        filter(projection_year %in% c(2030, 2040, 2050)) %>%
+        group_by(country, weighted_decile, projection_year) %>%
+        summarise(
+                gas_consumption = projected_gas,
+                gas_consumption_lower = projected_gas_lower,
+                gas_consumption_upper = projected_gas_upper,
+                
+                elec_consumption = projected_elec,
+                elec_consumption_lower = projected_elec_lower,
+                elec_consumption_upper = projected_elec_upper,
+                
+                total_bill = total_annual_bill,
+                total_bill_lower = total_annual_bill_lower,
+                total_bill_upper = total_annual_bill_upper,
+                
+                # Get baseline values for comparisons
+                baseline_gas = baseline_gas,
+                baseline_elec = baseline_elec,
+                baseline_bill = baseline_total_annual_bill,
+                
+                # Calculate percentage changes
+                gas_change_pct = (projected_gas / baseline_gas - 1) * 100,
+                elec_change_pct = (projected_elec / baseline_elec - 1) * 100,
+                bill_change_pct = (total_annual_bill / baseline_total_annual_bill - 1) * 100,
+                
+                .groups = "drop"
+        ) %>%
+        # Group by income group for table
+        mutate(
+                income_group = case_when(
+                        weighted_decile <= 3 ~ "Low Income",
+                        weighted_decile <= 7 ~ "Middle Income",
+                        TRUE ~ "High Income"
+                )
+        ) %>%
+        arrange(country, projection_year, weighted_decile)
+
+# Create point estimate table for select years
+point_table <- point_estimates %>%
+        filter(weighted_decile %in% c(1, 5, 10)) %>%  # Representative deciles
+        mutate(
+                # Format values with confidence intervals
+                gas_value = sprintf("%.1f [%.1f, %.1f]", 
+                                    gas_consumption, gas_consumption_lower, gas_consumption_upper),
+                elec_value = sprintf("%.1f [%.1f, %.1f]", 
+                                     elec_consumption, elec_consumption_lower, elec_consumption_upper),
+                bill_value = sprintf("%.0f [%.0f, %.0f]", 
+                                     total_bill, total_bill_lower, total_bill_upper),
+                
+                # Format percentage changes
+                gas_change = sprintf("%.1f%%", gas_change_pct),
+                elec_change = sprintf("%.1f%%", elec_change_pct),
+                bill_change = sprintf("%.1f%%", bill_change_pct)
+        ) %>%
+        select(country, projection_year, income_group, weighted_decile,
+               gas_value, gas_change, elec_value, elec_change, bill_value, bill_change) %>%
+        # Make the table more readable
+        rename(
+                "Country" = country,
+                "Year" = projection_year,
+                "Income Group" = income_group,
+                "Decile" = weighted_decile,
+                "Gas (MWh) [95% CI]" = gas_value,
+                "Gas Change" = gas_change,
+                "Electricity (MWh) [95% CI]" = elec_value,
+                "Electricity Change" = elec_change,
+                "Annual Bill (€) [95% CI]" = bill_value,
+                "Bill Change" = bill_change
+        )
+
+# Create table with kableExtra styling
+kable(point_table, "html", caption = "Table 1: Projected Energy Consumption and Bills with Confidence Intervals") %>%
+        kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE) %>%
+        column_spec(1, bold = TRUE) %>%
+        collapse_rows(columns = 1:3, valign = "middle") %>%
+        add_header_above(c(" " = 4, "Gas" = 2, "Electricity" = 2, "Energy Bill" = 2))
+
+# 4. Decomposition analysis (common in energy economics papers)
+decomposition <- all_projections %>%
+        filter(projection_year %in% c(2025, 2030, 2040, 2050)) %>%
+        group_by(country, weighted_decile) %>%
+        mutate(
+                # Calculate changes between periods
+                total_consumption = projected_gas + projected_elec,
+                baseline_total = baseline_gas + baseline_elec,
+                
+                # Decompose changes
+                total_change = total_consumption - first(total_consumption),
+                gas_contribution = projected_gas - first(projected_gas),
+                elec_contribution = projected_elec - first(projected_elec),
+                
+                # Calculate percentage contributions
+                gas_share = gas_contribution / total_change * 100,
+                elec_share = elec_contribution / total_change * 100
+        ) %>%
+        filter(projection_year > 2025) %>%  # Remove base year
+        ungroup()
+
+# Create decomposition table
+decomp_table <- decomposition %>%
+        group_by(country, projection_year) %>%
+        summarise(
+                avg_total_change = mean(total_change, na.rm = TRUE),
+                avg_gas_contribution = mean(gas_contribution, na.rm = TRUE),
+                avg_elec_contribution = mean(elec_contribution, na.rm = TRUE),
+                avg_gas_share = mean(gas_share, na.rm = TRUE),
+                avg_elec_share = mean(elec_share, na.rm = TRUE),
+                
+                # By income group
+                low_total_change = mean(total_change[weighted_decile <= 3], na.rm = TRUE),
+                mid_total_change = mean(total_change[weighted_decile > 3 & weighted_decile <= 7], na.rm = TRUE),
+                high_total_change = mean(total_change[weighted_decile > 7], na.rm = TRUE),
+                
+                .groups = "drop"
+        ) %>%
+        arrange(country, projection_year)
+
+# Format decomposition table
+decomp_formatted <- decomp_table %>%
+        mutate(
+                # Format values
+                total_change = sprintf("%.2f", avg_total_change),
+                gas_contribution = sprintf("%.2f (%.1f%%)", avg_gas_contribution, avg_gas_share),
+                elec_contribution = sprintf("%.2f (%.1f%%)", avg_elec_contribution, avg_elec_share),
+                
+                # Format by income group
+                low_income = sprintf("%.2f", low_total_change),
+                mid_income = sprintf("%.2f", mid_total_change),
+                high_income = sprintf("%.2f", high_total_change)
+        ) %>%
+        select(country, projection_year, total_change, gas_contribution, elec_contribution,
+               low_income, mid_income, high_income) %>%
+        rename(
+                "Country" = country,
+                "Year" = projection_year,
+                "Total Change (MWh)" = total_change,
+                "Gas Contribution" = gas_contribution,
+                "Electricity Contribution" = elec_contribution,
+                "Low Income" = low_income,
+                "Middle Income" = mid_income,
+                "High Income" = high_income
+        )
+
+# Create formatted table
+kable(decomp_formatted, "html", caption = "Table 2: Decomposition of Energy Consumption Changes") %>%
+        kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE) %>%
+        column_spec(1, bold = TRUE) %>%
+        collapse_rows(columns = 1, valign = "middle") %>%
+        add_header_above(c(" " = 2, "Overall Change Decomposition" = 3, "Change by Income Group" = 3))
+
+# 5. Distributional impact analysis (for energy policy papers)
+distributional <- all_projections %>%
+        filter(projection_year %in% c(2025, 2050)) %>%
+        select(country, weighted_decile, projection_year, total_annual_bill, baseline_total_annual_bill) %>%
+        pivot_wider(
+                names_from = projection_year,
+                values_from = c(total_annual_bill, baseline_total_annual_bill)
+        ) %>%
+        mutate(
+                # Calculate absolute and percentage changes
+                absolute_change = total_annual_bill_2050 - total_annual_bill_2025,
+                percentage_change = (total_annual_bill_2050 / total_annual_bill_2025 - 1) * 100,
+                
+                # Calculate share of income (using decile as proxy)
+                income_proxy = 11 - weighted_decile,  # Invert decile as income proxy
+                bill_share_2025 = total_annual_bill_2025 / income_proxy,
+                bill_share_2050 = total_annual_bill_2050 / income_proxy,
+                share_change = bill_share_2050 - bill_share_2025
+        ) %>%
+        arrange(country, weighted_decile)
+
+# Calculate distributional indices
+gini_coef <- function(x) {
+        x <- sort(x)
+        n <- length(x)
+        return(sum(x * 1:n) / (n * sum(x)) - (n + 1) / (2 * n))
+}
+
+distributional_indices <- distributional %>%
+        group_by(country) %>%
+        summarise(
+                # Gini coefficient for bills in 2025 and 2050
+                gini_2025 = gini_coef(total_annual_bill_2025),
+                gini_2050 = gini_coef(total_annual_bill_2050),
+                gini_change = gini_2050 - gini_2025,
+                
+                # Ratio of top to bottom decile
+                top_bottom_2025 = total_annual_bill_2025[weighted_decile == 10] / 
+                        total_annual_bill_2025[weighted_decile == 1],
+                top_bottom_2050 = total_annual_bill_2050[weighted_decile == 10] / 
+                        total_annual_bill_2050[weighted_decile == 1],
+                top_bottom_change = top_bottom_2050 - top_bottom_2025,
+                
+                # Average change percentage
+                avg_pct_change = mean(percentage_change),
+                
+                # Low income vs high income change
+                low_income_pct = mean(percentage_change[weighted_decile <= 3]),
+                high_income_pct = mean(percentage_change[weighted_decile >= 8]),
+                
+                .groups = "drop"
+        )
+
+# Format distributional indices table
+dist_formatted <- distributional_indices %>%
+        mutate(
+                # Format values
+                gini_2025 = sprintf("%.3f", gini_2025),
+                gini_2050 = sprintf("%.3f", gini_2050),
+                gini_change = sprintf("%.3f", gini_change),
+                
+                top_bottom_2025 = sprintf("%.2f", top_bottom_2025),
+                top_bottom_2050 = sprintf("%.2f", top_bottom_2050),
+                top_bottom_change = sprintf("%.2f", top_bottom_change),
+                
+                avg_pct_change = sprintf("%.1f%%", avg_pct_change),
+                low_income_pct = sprintf("%.1f%%", low_income_pct),
+                high_income_pct = sprintf("%.1f%%", high_income_pct)
+        ) %>%
+        rename(
+                "Country" = country,
+                "Gini 2025" = gini_2025,
+                "Gini 2050" = gini_2050,
+                "Gini Change" = gini_change,
+                "Top/Bottom 2025" = top_bottom_2025,
+                "Top/Bottom 2050" = top_bottom_2050,
+                "Top/Bottom Change" = top_bottom_change,
+                "Average Change" = avg_pct_change,
+                "Low Income Change" = low_income_pct,
+                "High Income Change" = high_income_pct
+        )
+
+# Create formatted table
+kable(dist_formatted, "html", caption = "Table 3: Distributional Impact Analysis") %>%
+        kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE) %>%
+        column_spec(1, bold = TRUE) %>%
+        add_header_above(c(" " = 1, "Gini Coefficient" = 3, "Top-to-Bottom Ratio" = 3, "Percentage Change" = 3))
+
+# Save all results for future use
+saveRDS(all_country_results, "all_country_enhanced_projections.rds")
+saveRDS(point_estimates, "point_estimates.rds")
+saveRDS(decomposition, "energy_decomposition.rds")
+saveRDS(distributional, "distributional_analysis.rds")
+saveRDS(distributional_indices, "distributional_indices.rds")
+
+# Print summary of available tables
+cat("Academic tables created:\n")
+cat("1. Regression-style table with fixed effects\n")
+cat("2. Panel data fixed effects model\n")
+cat("3. Point estimates with confidence intervals\n")
+cat("4. Decomposition analysis of energy changes\n")
+cat("5. Distributional impact analysis\n")
+
+```
+
+```{r export to Overleaf, include = FALSE}
+library(knitr)
+library(kableExtra)
+
+# Function to convert an RDS table to a LaTeX file
+convert_rds_to_latex <- function(rds_file, caption = NULL, digits = 2) {
+  data <- readRDS(rds_file)
+    base_name <- tools::file_path_sans_ext(basename(rds_file))
+    latex_table <- kable(data, format = "latex", booktabs = TRUE, 
+                       caption = caption, digits = digits) %>%
+    kable_styling(latex_options = c("striped", "scale_down", "hold_position"))
+  
+  output_file <- paste0(base_name, ".tex")
+  write(latex_table, output_file)
+  
+  cat("Converted", rds_file, "to", output_file, "\n")
+}
+
+# Convert all your tables
+convert_rds_to_latex("all_country_enhanced_projections.rds", 
+                     caption = "Enhanced Country Projections")
+convert_rds_to_latex("point_estimates.rds", 
+                     caption = "Point Estimates")
+convert_rds_to_latex("energy_decomposition.rds", 
+                     caption = "Energy Decomposition")
+convert_rds_to_latex("distributional_analysis.rds", 
+                     caption = "Distributional Analysis")
+convert_rds_to_latex("distributional_indices.rds", 
+                     caption = "Distributional Indices")
+
+
+library(knitr)
+library(kableExtra)
+
+# Load your distributional analysis data
+distributional <- readRDS("distributional_analysis.rds")
+
+# Create just the tabular content without the table environment
+latex_content <- kable(distributional, format = "latex", booktabs = TRUE,
+                    caption = NULL) %>%  # Important: no caption here
+    kable_styling(latex_options = c("striped"))
+
+# Save without table environment 
+write(latex_content, "distributional_analysis_content.tex")
+
+# If you want the full table with environment to be directly included
+full_table <- kable(distributional, format = "latex", booktabs = TRUE,
+                   caption = "Distributional Analysis") %>%
+    kable_styling(latex_options = c("striped"))
+write(full_table, "distributional_analysis_table.tex")
+```
+
+
+## Scenario 3: Front-loaded adoption
+
+```{r frontloaded adoption scenario, echo = FALSE}
+# Function to modify adoption data for front-loaded scenario
+create_frontloaded_adoption <- function(adoption_data, shift_years = 3, growth_boost = 1.5) {
+  
+  frontloaded_adoption <- adoption_data %>%
+    mutate(
+      # Move inflexion point earlier (shift adoption curve to the left)
+      inflexion_year = inflexion_year - shift_years,
+      
+      # Increase growth rate to make adoption happen faster initially
+      growth_rate = growth_rate * growth_boost,
+      
+      # Keep the maximum adoption levels the same
+      # This ensures we're comparing speed of adoption, not total adoption
+      country_max = country_max
+    )
+  
+  return(frontloaded_adoption)
+}
+
+# Function to run frontloaded scenario
+run_frontloaded_scenario <- function() {
+  # Create frontloaded adoption data
+  deu_frontloaded <- create_frontloaded_adoption(DE_summary)
+  uk_frontloaded <- create_frontloaded_adoption(UK_summary)
+  us_frontloaded <- create_frontloaded_adoption(US_summary)
+  
+  # Prepare country-specific household projections (reusing from original code)
+  deu_households <- create_household_projection("DEU", 2025, 2050)
+  uk_households <- create_household_projection("UK", 2025, 2050)
+  us_households <- create_household_projection("US", 2025, 2050)
+  
+  # Germany frontloaded scenario
+  message("Running Germany frontloaded projections...")
+  deu_frontloaded_results <- project_energy_time_enhanced(
+    consumption_data = DEU_consumption,
+    tech_impacts = technology_impacts,
+    adoption_data = deu_frontloaded,
+    household_projections = deu_households,
+    country_name = "DEU",
+    start_year = 2025,
+    end_year = 2050,
+    n_simulations = 100,
+    regional_variation = TRUE,
+    include_demographics = TRUE
+  )
+  
+  # UK frontloaded scenario
+  message("Running UK frontloaded projections...")
+  uk_frontloaded_results <- project_energy_time_enhanced(
+    consumption_data = UK_consumption,
+    tech_impacts = technology_impacts,
+    adoption_data = uk_frontloaded,
+    household_projections = uk_households,
+    country_name = "UK",
+    start_year = 2025,
+    end_year = 2050,
+    n_simulations = 100,
+    regional_variation = TRUE,
+    include_demographics = TRUE
+  )
+  
+  # US frontloaded scenario
+  message("Running US frontloaded projections...")
+  us_frontloaded_results <- project_energy_time_enhanced(
+    consumption_data = US_consumption,
+    tech_impacts = technology_impacts,
+    adoption_data = us_frontloaded,
+    household_projections = us_households,
+    country_name = "US",
+    start_year = 2025,
+    end_year = 2050,
+    n_simulations = 100,
+    regional_variation = TRUE,
+    include_demographics = TRUE
+  )
+  
+  # Return combined results
+  return(list(
+    DEU = deu_frontloaded_results,
+    UK = uk_frontloaded_results,
+    US = us_frontloaded_results
+  ))
+}
+
+# Run frontloaded scenario
+frontloaded_results <- run_frontloaded_scenario()
+```
+
+## Scenario 4: Back-laoded adoption 
+
+I now have estimates of how much these additional technologies would cost each decile to 2050. Now it is time to run a better forecast model that assumes earlier or later adoption trends of technologies. I want to look at how earlier or later adoption affects. 
+
+```{r slow adoption, echo=FALSE}
+# Function to modify adoption data for back-loaded scenario
+create_backloaded_adoption <- function(adoption_data, delay_years = 4, growth_reduction = 0.7) {
+  
+  backloaded_adoption <- adoption_data %>%
+    mutate(
+      # Move inflexion point later (shift adoption curve to the right)
+      inflexion_year = inflexion_year + delay_years,
+      
+      # Decrease growth rate to make adoption happen slower initially
+      growth_rate = growth_rate * growth_reduction,
+      
+      # Keep the maximum adoption levels similar
+      country_max = country_max
+    )
+  
+  return(backloaded_adoption)
+}
+
+run_backloaded_scenario <- function() {
+  # Create backloaded adoption data
+  deu_backloaded <- create_backloaded_adoption(DE_summary)
+  uk_backloaded <- create_backloaded_adoption(UK_summary)
+  us_backloaded <- create_backloaded_adoption(US_summary)
+  
+  # Prepare country-specific household projections (reusing from original code)
+  deu_households <- create_household_projection("DEU", 2025, 2050)
+  uk_households <- create_household_projection("UK", 2025, 2050)
+  us_households <- create_household_projection("US", 2025, 2050)
+  
+  message("Running Germany backloaded projections...")
+  deu_backloaded_results <- project_energy_time_enhanced(
+    consumption_data = DEU_consumption,
+    tech_impacts = technology_impacts,
+    adoption_data = deu_backloaded,
+    household_projections = deu_households,
+    country_name = "DEU",
+    start_year = 2025,
+    end_year = 2050,
+    n_simulations = 100,
+    regional_variation = TRUE,
+    include_demographics = TRUE
+  )
+  
+  message("Running UK backloaded projections...")
+  uk_backloaded_results <- project_energy_time_enhanced(
+    consumption_data = UK_consumption,
+    tech_impacts = technology_impacts,
+    adoption_data = uk_backloaded,
+    household_projections = uk_households,
+    country_name = "UK",
+    start_year = 2025,
+    end_year = 2050,
+    n_simulations = 100,
+    regional_variation = TRUE,
+    include_demographics = TRUE
+  )
+  
+  message("Running US backloaded projections...")
+  us_backloaded_results <- project_energy_time_enhanced(
+    consumption_data = US_consumption,
+    tech_impacts = technology_impacts,
+    adoption_data = us_backloaded,
+    household_projections = us_households,
+    country_name = "US",
+    start_year = 2025,
+    end_year = 2050,
+    n_simulations = 100,
+    regional_variation = TRUE,
+    include_demographics = TRUE
+  )
+    return(list(
+    DEU = deu_backloaded_results,
+    UK = uk_backloaded_results,
+    US = us_backloaded_results
+  ))
+}
+
+
+backloaded_results <- run_backloaded_scenario()
+
+```
+
+```{r compare scenarios, echo = FALSE}
+
+
+compare_adoption_scenarios <- function(baseline, frontloaded, backloaded, country_code) {
+  # Extract projection data for the specified country
+  baseline_data <- baseline[[country_code]]$projections %>% 
+    filter(weighted_decile %in% c(1, 5, 10)) %>%
+    mutate(scenario = "Baseline")
+    
+  frontloaded_data <- frontloaded[[country_code]]$projections %>%
+    filter(weighted_decile %in% c(1, 5, 10)) %>%
+    mutate(scenario = "Front-loaded")
+    
+  backloaded_data <- backloaded[[country_code]]$projections %>%
+    filter(weighted_decile %in% c(1, 5, 10)) %>%
+    mutate(scenario = "Back-loaded")
+  
+  # Combine data
+  combined_data <- bind_rows(baseline_data, frontloaded_data, backloaded_data)
+  
+  # Map deciles to meaningful labels
+  combined_data <- combined_data %>%
+    mutate(income_group = case_when(
+      weighted_decile == 1 ~ "Low Income (Q1)",
+      weighted_decile == 5 ~ "Middle Income (Q5)",
+      weighted_decile == 10 ~ "High Income (Q10)",
+      TRUE ~ paste("Decile", weighted_decile)
+    ))
+  
+  # Create visualization comparing scenarios
+  ggplot(combined_data, 
+         aes(x = projection_year, 
+             y = total_annual_bill, 
+             color = scenario,
+             linetype = scenario)) +
+    geom_line(size = 1.2) +
+    facet_wrap(~income_group, scales = "free_y") +
+    labs(
+      title = paste(country_code, "- Impact of Adoption Timing by Income Group"),
+      subtitle = "Comparison of baseline, front-loaded, and back-loaded technology adoption",
+      x = "Year",
+      y = "Annual Energy Bill(log scaled)",
+      color = "Scenario",
+      linetype = "Scenario"
+    ) +
+    theme_minimal() +
+    theme(
+      legend.position = "bottom",
+      strip.text = element_text(face = "bold", size = 11),
+      plot.title = element_text(face = "bold"),
+      plot.subtitle = element_text(size = 9)
+    ) +
+    scale_color_brewer(palette = "Set1") +
+    scale_x_continuous(breaks = seq(2025, 2050, 5)) + 
+scale_y_continuous(trans = "log1p", breaks = pretty_breaks())}
+
+deu_scenario_vis <- compare_adoption_scenarios(
+  all_country_results,
+  frontloaded_results,
+  backloaded_results,
+  "DEU"
+)
+
+uk_scenario_vis <- compare_adoption_scenarios(
+  all_country_results,
+  frontloaded_results,
+  backloaded_results,
+  "UK"
+)
+
+us_scenario_vis <- compare_adoption_scenarios(
+  all_country_results,
+  frontloaded_results,
+  backloaded_results,
+  "US"
+)
+ggsave("deu_income_scenarios.pdf", deu_scenario_vis, width = 10, height = 7)
+ggsave("uk_income_scenarios.pdf", uk_scenario_vis, width = 10, height = 7)
+ggsave("us_income_scenarios.pdf", us_scenario_vis, width = 10, height = 7)
+
+
+
+
+
+# Run the relative impacts comparison visualization
+compare_relative_impacts <- function(baseline, frontloaded, backloaded, country_code) {
+  # Calculate % differences from baseline for each scenario
+  baseline_data <- baseline[[country_code]]$projections %>% 
+    filter(weighted_decile %in% c(1, 5, 10)) %>%
+    select(weighted_decile, projection_year, baseline_bill = total_annual_bill)
+  
+  # Process frontloaded data with relative changes
+  frontloaded_data <- frontloaded[[country_code]]$projections %>%
+    filter(weighted_decile %in% c(1, 5, 10)) %>%
+    select(weighted_decile, projection_year, frontloaded_bill = total_annual_bill) %>%
+    inner_join(baseline_data, by = c("weighted_decile", "projection_year")) %>%
+    mutate(
+      scenario = "Front-loaded",
+      pct_change = (frontloaded_bill / baseline_bill - 1) * 100
+    )
+  
+  # Process backloaded data with relative changes
+  backloaded_data <- backloaded[[country_code]]$projections %>%
+    filter(weighted_decile %in% c(1, 5, 10)) %>%
+    select(weighted_decile, projection_year, backloaded_bill = total_annual_bill) %>%
+    inner_join(baseline_data, by = c("weighted_decile", "projection_year")) %>%
+    mutate(
+      scenario = "Back-loaded",
+      pct_change = (backloaded_bill / baseline_bill - 1) * 100
+    )
+  
+  # Combine and prepare for plotting
+  combined_data <- bind_rows(frontloaded_data, backloaded_data) %>%
+    mutate(income_group = case_when(
+      weighted_decile == 1 ~ "Low Income (Q1)",
+      weighted_decile == 5 ~ "Middle Income (Q5)",
+      weighted_decile == 10 ~ "High Income (Q10)",
+      TRUE ~ paste("Decile", weighted_decile)
+    ))
+  
+  # Create visualization
+  ggplot(combined_data, 
+         aes(x = projection_year, 
+             y = pct_change, 
+             color = scenario,
+             linetype = scenario)) +
+    geom_line(size = 1.2) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+    facet_wrap(~income_group) +
+    labs(
+      title = paste(country_code, "- Relative Impact of Different Adoption Scenarios"),
+      subtitle = "Percentage change in annual energy bills compared to baseline scenario",
+      x = "Year",
+      y = "% Change from Baseline",
+      color = "Scenario",
+      linetype = "Scenario"
+    ) +
+    theme_minimal() +
+    scale_color_brewer(palette = "Set1")
+}
+
+deu_relative_impacts <- compare_relative_impacts(
+  all_country_results,
+  frontloaded_results,
+  backloaded_results,
+  "DEU"
+)
+
+uk_relative_impacts <- compare_relative_impacts(
+  all_country_results,
+  frontloaded_results,
+  backloaded_results,
+  "UK"
+)
+
+us_relative_impacts <- compare_relative_impacts(
+  all_country_results,
+  frontloaded_results,
+  backloaded_results,
+  "US"
+)
+
+
+# Also save as PDF for vector graphics (better quality in LaTeX)
+ggsave("deu_relative_impacts.pdf", deu_relative_impacts, width = 10, height = 7)
+ggsave("uk_relative_impacts.pdf", uk_relative_impacts, width = 10, height = 7)
+ggsave("us_relative_impacts.pdf", us_relative_impacts, width = 10, height = 7)
+```
