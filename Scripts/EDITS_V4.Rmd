@@ -65,7 +65,7 @@ Germany minimum wage was introduced in 2015 and was €8.50, €8.84 in 2017 and
 For the US, federal income minimum wage amount doesn't change and is $1,150 net per month, or 13,800 per year. If they are single hh benefits, the maximum federal benefit is USD 901 per month or 10816 per year and there is no minimum, but lowest benefits would be around 292 a month (children of disabled workers in 2010). For long-term low earners there is also the special minimum benefit of SSI, which is 170 per month. To be cautious, I make the floor the benefits amount. This is 2040 a year. 
 
 
-For UK federal minimum is £5.05 in 2005 and rises to £10 over 18 in 2025, which net is 9,696 a year. Benefits (universal credit starting in 2012) is GBP 2,847 per year (1517 single on universal). I take universal credit to error on the side of caution.
+For UK federal minimum is £5.05 in 2005 and rises to £10 over 18 in 2025, which net is 9,696 a year. Benefits (universal credit starting in 2012) is GBP 2,847 per year (1517 single on universal). I take universal credit to error on the side of caution.Basic Jobseekers allowance in 2010 was 283.62 a month 3403.44
 
 To measure benefits, I use OECD 2010 publication on minimum income benefits in OECD countries <https://www.oecd.org/content/dam/oecd/en/publications/reports/2010/01/minimum-income-benefits-in-oecd-countries_g17a1d77/218402763872.pdf>. 
 
@@ -75,11 +75,13 @@ This eliminates 150 observations from US, no observations from the UK, and 38 ob
 
 US<- US %>%
   filter(hh_income >= 2040) %>%
-  filter(adjusted_income >= 2040)
+  filter(adjusted_income >= 2040) 
 
 UK <- UK %>%
-  filter(hh_incomey >= 1517) %>%
-  filter(adjusted_income >= 1517)
+  filter(hh_incomey >= 3403) %>%
+  filter(adjusted_income >= 3403) %>%
+  rename(weight = hhdenui_xw)
+
 
 DEU <- DEU %>%
   filter(hh_incomey >= 4140) %>%
@@ -437,13 +439,13 @@ ggplot(deu_props_long, aes(x = weighted_decile, y = percentage, color = technolo
 
 # Remove NA values from the dataset
 deu_props_long_clean <- deu_props_long %>%
-  filter(!is.na(percentage)) 
-      #filter(!(technology == "Hybrid/EV"),
-           #!(technology == "Home Renovations" & year == 2019))
+  filter(!is.na(percentage)) %>%
+      filter(!( technology == "Hybrid/EV"),
+           !(technology == "Home Renovations" & year == 2019))
   
 
 # Then create the plot
-ggplot(deu_props_long_clean, aes(x = year, y = percentage, color = technology, group = technology)) +
+ggplot(deu_props_long_clean, aes(x = year, y = percentage, color = technology)) +
   geom_line() +
   geom_point() +
   facet_wrap(~weighted_decile) +
@@ -1059,7 +1061,7 @@ tech_penetration_fits[['US']] %>% `names<-`(str_c("Quintile ", 1:5)) %>%
 
 
 ```
-Export for Overleaf
+Export for Overleaf--- return to fix 
 ```{r Latex version, echo=FALSE}
 output_dir <- "/Users/cassandraetter-wenzel/Documents/GitHub/EDITS/Output"
 
@@ -1121,62 +1123,64 @@ create_model_summary(tech_penetration_fits[['GB']], "United Kingdom",
 create_model_summary(tech_penetration_fits[['US']], "United States", 
                     file.path(output_dir, "tech_penetration_fits_US.tex"))
 
-```
+### Different latex option ### 
 
-General Analysis could also be shown like this
-```{r model summary, echo = FALSE}
-# Function to create table for one country
-create_country_table <- function(country_summary, country_name) {
-  # Format table
-  pub_table <- country_summary %>%
-    # Round estimates to 3 decimal places
-    mutate(
-      estimate = round(estimate, 3)
+options(modelsummary_format_numeric_latex = 'plain')
+
+for (iso2 in c('GB', 'DE', 'US')) {
+  sapply(1:5, function(q) {
+    modelsummary(
+      tech_penetration_fits[[iso2]][[q]] %>%
+        (function(l) {
+          names(l) <- str_to_title(names(l)) %>% str_replace('_', ' ')
+          l
+        }),
+      stars = c('*' = 0.1, '**' = 0.05, '***' = 0.01),
+      # shape = 'rbind',
+      shape = model ~ term + statistic,
+      output = "latex_tabular",
+      booktabs = TRUE,
+      # fmt = "%.3f",
+      fmt = fmt_term(
+        inflexion_year = function(x) as.integer(x),
+        default = function(x) sprintf("%.2f", x)
+      ),
+      table_format = "latex",
+      title = paste("Technology Adoption Parameters:", 
+                    countrycode::countryname(iso2, 'iso2c', 'country.name')),
+      gof_omit = 'AIC|BIC|Log|fin|Conv',
+      coef_map = c(
+        "country_max" = "Maximum Penetration by 2050",
+        "growth_rate" = "Growth Rate",
+        "inflexion_year" = "Inflection Year"
+      ),
+      note = c("* p < 0.1, ** p < 0.05, *** p < 0.01"),
+      tex_wrap = c("begin{table}[H]", "\\centering", "\\small", "\\end{table}"),
+      add_rows = NULL
     ) %>%
-    # Pivot wider to get technologies as columns
-    pivot_wider(
-      id_cols = c(quintile, parameter),
-      names_from = technology,
-      values_from = estimate
-    ) %>%
-    # Arrange by parameter and quintile
-    arrange(parameter, quintile)
-  
-  # Create formatted table
-  formatted_table <- pub_table %>%
-    kbl(format = "html",
-        caption = paste("NLS Regression Results for", country_name),
-        align = "c",
-        escape = FALSE) %>%
-    kable_styling(bootstrap_options = c("striped", "hover"),
-                  full_width = FALSE) %>%
-    # Group by parameters instead of countries
-    pack_rows(index = table(pub_table$parameter)) %>%
-    add_header_above(c("Quintile Groups" = 2, 
-                      "Technologies" = ncol(pub_table) - 2)) %>%
-    footnote(
-      general = paste("Note: Values show parameter estimates from NLS regression.",
-                     "Parameters shown are country_max (maximum penetration),",
-                     "growth_rate (speed of adoption), and",
-                     "inflexion_year (year of maximum growth).")
+      print %>% capture.output() %>%
+      str_split('\n') %>%
+      tail(-5) %>% head(-2) %>%
+      c(str_c("Quintile ", q, "& & & & & & \\\\ \\midrule"), .) %>%
+      str_c(collapse = '\n')
+  }) %>%
+    str_c(collapse = '\\midrule \n') %>%
+    str_c("\\begin{tabular}{l{2cm}p{1cm}p{1cm}p{1cm}p{1cm}p{1cm}p{1cm}} \\toprule
+          & \\multicolumn{2}{c}{Maximum penetration} & \\multicolumn{2}{c}{Growth rate} & \\multicolumn{2}{c}{Inflexion year} \\\\ 
+          \\cmidrule(lr){2-3} \\cmidrule(lr){4-5} \\cmidrule(lr){6-7}
+          & Est. & S.E. & Est. & S.E. & Est. & S.E. \\\\ 
+          \\midrule \n ", ., "
+          \\bottomrule 
+          \\multicolumn{7}{p{10cm}}{\\footnotesize \\textit{Note:} * p < 0.1, ** p < 0.05, *** p < 0.01. Standard errors indicate how precisely the model parameters are fitted to the observed data from 2010 to 2021.}
+          \\end{tabular}") %>%
+    readr::write_file(
+      fs::path(output_dir, str_c("tech_penetration_fits_", iso2, ".tex"))
     )
-  
-  return(formatted_table)
 }
 
-# Create separate tables for each country
-germany_table <- create_country_table(DE_summary, "Germany")
-uk_table <- create_country_table(GB_summary, "United Kingdom")
-us_table <- create_country_table(US_summary, "United States")
-
-# Return all tables
-list(
-  germany = germany_table,
-  uk = uk_table,
-  us = us_table
-)
 
 ```
+
 ### Country combined projections by Q1-Q5
 
 Perhaps most interesting is looking at the technologies by quintile accross the three Countries.
@@ -1461,6 +1465,7 @@ DEU_energy <- DEU %>%
         mutate(elec_a_mwh = elec_a_exp / (elec_price * 1000),
                gas_a_mwh = gas_a_exp / (gas_price * 1000))
 
+DEU_energy$weighted_decile <-as.factor(DEU_energy$weighted_decile)
 
 DEU_energy_by_decile_MWH <- DEU_energy %>%
         as.data.table %>% 
@@ -1473,17 +1478,16 @@ DEU_energy_by_decile_MWH <- DEU_energy %>%
         arrange(year, weighted_decile, variable)
 
 DEU_energy_by_decile_MWH %>%
-        ggplot(aes(year, value, color = factor(weighted_decile))) +
+        ggplot(aes(year, value, color = weighted_decile)) +
         geom_line() +
         ylim(0, NA) +
         facet_wrap(~variable) +
         theme_minimal() + 
         labs(
                 title = "Average German HH Consumption (2011 - 2021)", 
+                x = "Income Decile",
                 y = "Annual Energy Consumption (MWh)") +
-        theme(legend.position = "bottom",
-              strip.text = element_text(size = 12, face = "bold")
-              
+        theme(legend.position = "bottom"
         )
 ggsave("~/Documents/GitHub/EDITS/Output/DE_consumption.png", width = 10, height = 7, dpi = 300)
 ### Average for all deciles 
@@ -1498,8 +1502,7 @@ DEU_energy_by_decile_MWH[, .(value = weighted.mean(value, weight, na.rm = TRUE))
                 title = "Average German Energy Consumption (2011- 2021)", 
                 y = "Household Energy Consumption (MWh)") + 
         theme(
-                legend.position = "bottom",
-                strip.text = element_text(size = 12, face = "bold")
+                legend.position = "bottom"
         )
 
 DEU_consumption <- DEU_energy %>%
@@ -1667,7 +1670,7 @@ UK: I use a panel data regression with within fixed-effects to model energy cons
 
 Sensititivye analysis tells me that fixed effect model is preferred to random effects (reject the null of the hausman test) and use fixed effect panel to model my electricity consumption to 2050. VIF multicollinearity tests are all below 10 (highest are weighted decile and income at 6, which are correlated)
 
-```{r UK panel with fixed effects, echo = FALSE}
+```{r panel with fixed effects, echo = FALSE}
 UK_energy$year <- as.numeric(as.character(UK_energy$year))
 US_energy$year <- as.numeric(as.character(US_energy$year))
 DEU_energy$year <- as.numeric(as.character(DEU_energy$year))
@@ -1683,17 +1686,16 @@ energy_data_us$weighted_decile <- as.factor(energy_data_us$weighted_decile)
 energy_data_de$weighted_decile <- as.factor(energy_data_de$weighted_decile)
 
 ### Electricity #### 
-model_uk_elec <- plm(elec_a_mwh ~ elec_price + gas_price + log(adjusted_income_2yr) + hhsize + 
-                            urban_dv + age_dv + hsrooms + tenure_dv + gor_dv + weighted_decile + year,
-                               data = energy_data_uk, model = "within", index = c("weighted_decile", "year"))
+model_uk_elec <- plm(elec_a_mwh ~ elec_price + gas_price + log(hh_incomey) + hhsize + 
+                  urban_dv + age_dv + hsrooms + tenure_dv + gor_dv + weighted_decile + year,
+data = energy_data_uk, model = "within", index = c("weighted_decile", "year"))
 
-model_us_elec <- plm(elec_a_mwh ~elec_price + gas_price + log(adjusted_income_2yr) + hh_size + 
+model_us_elec <- plm(elec_a_mwh ~elec_price + gas_price + log(hh_income) + hh_size + 
                        hh_rooms + hh_own + us_state + weighted_decile + year, 
                      data = energy_data_us, model = "within", index = 
                        c("weighted_decile", "year"))
 
-model_de_elec <- plm(elec_a_mwh ~elec_price + gas_price + log(adjusted_income_2yr) + hgtyp1hh +
-                       hgsize + hgowner + hgnuts1 + weighted_decile + year, 
+model_de_elec <- plm(elec_a_mwh ~elec_price + gas_price + log(hh_incomey) + hgtyp1hh + hgsize + hgowner + hgnuts1 + weighted_decile + year, 
                      data = energy_data_de, model = "within", index = 
                        c("weighted_decile", "year"))
 
@@ -2373,8 +2375,8 @@ create_country_vis <- function(country_code) {
                 facet_grid(type ~ source, scales = "free_y") +
                 # Customize appearance
                 labs(
-                        title = paste(country_code, "- Historical and Projected Energy Consumption and Bills"),
-                        subtitle = "Solid lines = historical data, Dashed lines = projections with 20-80% confidence intervals",
+                        title = paste(country_code, "Historical and Projected Energy Consumption and Bills by Decile"),
+                        subtitle = "Solid lines = historical data, Dashed lines = projections to 2050",
                         x = "Year",
                         y = NULL,
                         color = "Income Decile",
@@ -2385,7 +2387,7 @@ create_country_vis <- function(country_code) {
                 scale_fill_viridis_d() +
                 scale_y_continuous(limits = c(0, NA), expand = c(0, 0)) +
                 theme(
-                        legend.position = "right",
+                        legend.position = "bottom",
                         plot.title = element_text(face = "bold"),
                         plot.subtitle = element_text(size = 9),
                         strip.text = element_text(face = "bold"),
@@ -2777,146 +2779,154 @@ all_projections <- bind_rows(
 
 # Function to create enhanced visualization
 create_enhanced_vis <- function(projections, historical_data, country_code) {
-        # Prepare historical data
-        historical <- historical_data %>%
-                filter(country == country_code) %>%
-                mutate(
-                        type = case_when(
-                                metric %in% c("baseline_gas", "baseline_elec", "total_consumption") ~ "Consumption (MWh)",
-                                TRUE ~ "Annual Bills (€)"
-                        ),
-                        source = case_when(
-                                metric %in% c("baseline_gas", "annual_gas_bill") ~ "Gas",
-                                metric %in% c("baseline_elec", "annual_elec_bill") ~ "Electricity",
-                                TRUE ~ "Total"
-                        )
-                )
-        
-        # Prepare projection data
-        projection <- projections %>%
-                filter(country == country_code) %>%
-                mutate(
-                        projected_total = projected_gas + projected_elec,
-                        projected_total_lower = projected_gas_lower + projected_elec_lower,
-                        projected_total_upper = projected_gas_upper + projected_elec_upper
-                ) %>%
-                pivot_longer(
-                        cols = c(
-                                # Consumption columns
-                                projected_gas, projected_elec, projected_total,
-                                projected_gas_lower, projected_elec_lower, projected_total_lower,
-                                projected_gas_upper, projected_elec_upper, projected_total_upper,
-                                # Bill columns
-                                annual_gas_bill, annual_elec_bill, total_annual_bill,
-                                annual_gas_bill_lower, annual_elec_bill_lower, total_annual_bill_lower,
-                                annual_gas_bill_upper, annual_elec_bill_upper, total_annual_bill_upper
-                        ),
-                        names_to = "metric",
-                        values_to = "value"
-                ) %>%
-                mutate(
-                        type = case_when(
-                                grepl("projected", metric) ~ "Consumption (MWh)",
-                                TRUE ~ "Annual Bills (National Currency)"
-                        ),
-                        source = case_when(
-                                grepl("gas", metric) ~ "Gas",
-                                grepl("elec", metric) ~ "Electricity",
-                                TRUE ~ "Total"
-                        ),
-                        ci_type = case_when(
-                                grepl("lower", metric) ~ "lower",
-                                grepl("upper", metric) ~ "upper",
-                                TRUE ~ "central"
-                        )
-                )
-        
-        # Create visualization
-        ggplot() +
-                # Historical data
-                geom_line(data = historical,
-                          aes(x = projection_year, 
-                              y = value,
-                              color = factor(weighted_decile),
-                              group = weighted_decile),
-                          size = 1) +
-                # Transition point
-                geom_point(data = historical %>% 
-                                   filter(projection_year == max(projection_year)),
-                           aes(x = projection_year,
-                               y = value,
-                               color = factor(weighted_decile)),
-                           size = 2) +
-                # Projections with confidence intervals
-                geom_ribbon(data = projection %>% 
-                                    filter(ci_type != "central") %>%
-                                    pivot_wider(names_from = ci_type, values_from = value, values_fill = NA),
-                            aes(x = projection_year,
-                                ymin = lower,
-                                ymax = upper,
-                                fill = factor(weighted_decile),
-                                group = weighted_decile),
-                            alpha = 0.3, 
-                            color = NA) +
-                # Projected central lines
-                geom_line(data = projection %>% 
-                                  filter(ci_type == "central"),
-                          aes(x = projection_year,
-                              y = value,
-                              color = factor(weighted_decile),
-                              group = weighted_decile),
-                          linetype = "dashed",
-                          size = 1) +
-                # Transition line
-                geom_vline(xintercept = 2025, 
-                           linetype = "dashed", 
-                           color = "gray50") +
-                # Faceting
-                facet_grid(type ~ source, scales = "free_y") +
-                # Customize appearance
-                labs(
-                        title = paste(country_code, "- Enhanced Baseline Projection"),
-                        subtitle = "Includes demographic effects, regional variation, and natural efficiency improvements",
-                        x = "Year",
-                        y = NULL,
-                        color = "Income Decile",
-                        fill = "Income Decile"
-                ) +
-                theme_minimal() +
-                scale_color_viridis_d() +
-                scale_fill_viridis_d() +
-                scale_y_continuous(limits = c(0, NA), expand = c(0, 0)) +
-                theme(
-                        legend.position = "right",
-                        plot.title = element_text(face = "bold"),
-                        plot.subtitle = element_text(size = 9),
-                        strip.text = element_text(face = "bold"),
-                        panel.spacing = unit(2, "lines")
-                )
+  # Get full country name
+  country_name <- case_when(
+    country_code == "DEU" ~ "Germany",
+    country_code == "UK" ~ "United Kingdom",
+    country_code == "US" ~ "United States",
+    TRUE ~ country_code  # Fallback to code if not matched
+  )
+  
+  # Prepare historical data
+  historical <- historical_data %>%
+    filter(country == country_code) %>%
+    mutate(
+      type = case_when(
+        metric %in% c("baseline_gas", "baseline_elec", "total_consumption") ~ "Consumption (MWh)",
+        TRUE ~ "Annual Bills (€)"
+      ),
+      source = case_when(
+        metric %in% c("baseline_gas", "annual_gas_bill") ~ "Gas",
+        metric %in% c("baseline_elec", "annual_elec_bill") ~ "Electricity",
+        TRUE ~ "Total"
+      )
+    )
+  
+  # Prepare projection data
+  projection <- projections %>%
+    filter(country == country_code) %>%
+    mutate(
+      projected_total = projected_gas + projected_elec,
+      projected_total_lower = projected_gas_lower + projected_elec_lower,
+      projected_total_upper = projected_gas_upper + projected_elec_upper
+    ) %>%
+    pivot_longer(
+      cols = c(
+        # Consumption columns
+        projected_gas, projected_elec, projected_total,
+        projected_gas_lower, projected_elec_lower, projected_total_lower,
+        projected_gas_upper, projected_elec_upper, projected_total_upper,
+        # Bill columns
+        annual_gas_bill, annual_elec_bill, total_annual_bill,
+        annual_gas_bill_lower, annual_elec_bill_lower, total_annual_bill_lower,
+        annual_gas_bill_upper, annual_elec_bill_upper, total_annual_bill_upper
+      ),
+      names_to = "metric",
+      values_to = "value"
+    ) %>%
+    mutate(
+      type = case_when(
+        grepl("projected", metric) ~ "Consumption (MWh)",
+        TRUE ~ "Annual Bills (National Currency)"
+      ),
+      source = case_when(
+        grepl("gas", metric) ~ "Gas",
+        grepl("elec", metric) ~ "Electricity",
+        TRUE ~ "Total"
+      ),
+      ci_type = case_when(
+        grepl("lower", metric) ~ "lower",
+        grepl("upper", metric) ~ "upper",
+        TRUE ~ "central"
+      )
+    )
+  
+  # Create visualization
+  ggplot() +
+    # Historical data
+    geom_line(data = historical,
+              aes(x = projection_year,
+                  y = value,
+                  color = factor(weighted_decile),
+                  group = weighted_decile),
+              size = 1) +
+    # Transition point
+    geom_point(data = historical %>%
+                 filter(projection_year == max(projection_year)),
+               aes(x = projection_year,
+                   y = value,
+                   color = factor(weighted_decile)),
+               size = 2) +
+    # Projections with confidence intervals
+    geom_ribbon(data = projection %>%
+                  filter(ci_type != "central") %>%
+                  pivot_wider(names_from = ci_type, values_from = value, values_fill = NA),
+                aes(x = projection_year,
+                    ymin = lower,
+                    ymax = upper,
+                    fill = factor(weighted_decile),
+                    group = weighted_decile),
+                alpha = 0.3, 
+                color = NA) +
+    # Projected central lines
+    geom_line(data = projection %>%
+                filter(ci_type == "central"),
+              aes(x = projection_year,
+                  y = value,
+                  color = factor(weighted_decile),
+                  group = weighted_decile),
+              linetype = "dashed",
+              size = 1) +
+    # Transition line
+    geom_vline(xintercept = 2025,
+               linetype = "dashed",
+               color = "gray50") +
+    # Faceting
+    facet_grid(type ~ source, scales = "free_y") +
+    # Customize appearance
+    labs(
+      title = paste(country_name, "baseline projection by income decile"),
+      subtitle = "Includes demographic effects, regional variation, and natural efficiency improvements",
+      x = "Year",
+      y = NULL,
+      color = "Income Decile",
+      fill = "Income Decile"
+    ) +
+    theme_minimal() +
+    scale_color_viridis_d() +
+    scale_fill_viridis_d() +
+    scale_y_continuous(limits = c(0, NA), expand = c(0, 0)) +
+    theme(
+      legend.position = "right",
+      plot.title = element_text(face = "bold"),
+      plot.subtitle = element_text(size = 9),
+      strip.text = element_text(face = "bold"),
+      panel.spacing = unit(2, "lines")
+    )
 }
 
 deu_enhanced_vis <- create_enhanced_vis(
-        deu_projections, 
-        historical_combined, 
-        "DEU"
+  deu_projections, 
+  historical_combined, 
+  "DEU"
 )
 
 us_enhanced_vis <- create_enhanced_vis(
-        us_projections,  
-        historical_combined, 
-        "US"
+  us_projections,  
+  historical_combined, 
+  "US"
 )
 
 uk_enhanced_vis <- create_enhanced_vis(
-        uk_projections,  # Fixed: using the correct variable
-        historical_combined, 
-        "UK"
+  uk_projections,  # Fixed: using the correct variable
+  historical_combined, 
+  "UK"
 )
 
-# Display the enhanced visualization
-print(deu_enhanced_vis)
-print(uk_enhanced_vis)
-print(us_enhanced_vis)
+
+ggsave("deu_enhanced_projection.png", deu_enhanced_vis, width = 12, height = 8, dpi = 300)
+ggsave("uk_enhanced_projection.png", uk_enhanced_vis, width = 12, height = 8, dpi = 300)
+ggsave("us_enhanced_projection.png", us_enhanced_vis, width = 12, height = 8, dpi = 300)
 
 # Sensitivity analysis - run multiple scenarios
 run_sensitivity_analysis <- function(country_data, tech_data, adoption_data, country_name) {
@@ -3371,6 +3381,199 @@ cat("4. Decomposition analysis of energy changes\n")
 cat("5. Distributional impact analysis\n")
 
 ```
+#### Alternative for enhanced visualization to 2050 
+```{r alternative enhanced visualization to 2050, include=FALSE}
+create_enhanced_vis <- function(projections, historical_data, country_code) {
+  # Get full country name
+  country_name <- case_when(
+    country_code == "DEU" ~ "Germany",
+    country_code == "UK" ~ "United Kingdom",
+    country_code == "US" ~ "United States",
+    TRUE ~ country_code  # Fallback to code if not matched
+  )
+  
+  # Set currency based on country
+  currency_label <- case_when(
+    country_code == "DEU" ~ "€",
+    country_code == "UK" ~ "£",
+    country_code == "US" ~ "$",
+    TRUE ~ ""
+  )
+  
+  # Prepare historical data
+  historical <- historical_data %>%
+    filter(country == country_code) %>%
+    mutate(
+      type = case_when(
+        metric %in% c("baseline_gas", "baseline_elec", "total_consumption") ~ "Consumption (MWh)",
+        TRUE ~ paste0("Annual Bills (", currency_label, ")")
+      ),
+      source = case_when(
+        metric %in% c("baseline_gas", "annual_gas_bill") ~ "Gas",
+        metric %in% c("baseline_elec", "annual_elec_bill") ~ "Electricity",
+        TRUE ~ "Total"
+      )
+    )
+  
+  # Prepare projection data
+  projection <- projections %>%
+    filter(country == country_code) %>%
+    mutate(
+      projected_total = projected_gas + projected_elec,
+      projected_total_lower = projected_gas_lower + projected_elec_lower,
+      projected_total_upper = projected_gas_upper + projected_elec_upper
+    ) %>%
+    pivot_longer(
+      cols = c(
+        # Consumption columns
+        projected_gas, projected_elec, projected_total,
+        projected_gas_lower, projected_elec_lower, projected_total_lower,
+        projected_gas_upper, projected_elec_upper, projected_total_upper,
+        # Bill columns
+        annual_gas_bill, annual_elec_bill, total_annual_bill,
+        annual_gas_bill_lower, annual_elec_bill_lower, total_annual_bill_lower,
+        annual_gas_bill_upper, annual_elec_bill_upper, total_annual_bill_upper
+      ),
+      names_to = "metric",
+      values_to = "value"
+    ) %>%
+    mutate(
+      # CRITICAL FIX: Use the exact same label format as in historical data
+      type = case_when(
+        grepl("projected", metric) ~ "Consumption (MWh)",
+        TRUE ~ paste0("Annual Bills (", currency_label, ")")
+      ),
+      source = case_when(
+        grepl("gas", metric) ~ "Gas",
+        grepl("elec", metric) ~ "Electricity",
+        TRUE ~ "Total"
+      ),
+      ci_type = case_when(
+        grepl("lower", metric) ~ "lower",
+        grepl("upper", metric) ~ "upper",
+        TRUE ~ "central"
+      )
+    )
+  
+  # Create visualization
+  ggplot() +
+    
+    # Historical data
+    geom_line(data = historical,
+              aes(x = projection_year,
+                  y = value,
+                  color = factor(weighted_decile),
+                  group = weighted_decile),
+              size = 1) +
+    # Transition point
+    geom_point(data = historical %>%
+                 filter(projection_year == max(projection_year)),
+               aes(x = projection_year,
+                   y = value,
+                   color = factor(weighted_decile)),
+               size = 2) +
+    # Projections with confidence intervals
+    geom_ribbon(data = projection %>%
+                  filter(ci_type != "central") %>%
+                  pivot_wider(names_from = ci_type, values_from = value, values_fill = NA),
+                aes(x = projection_year,
+                    ymin = lower,
+                    ymax = upper,
+                    fill = factor(weighted_decile),
+                    group = weighted_decile),
+                alpha = 0.3, 
+                color = NA) +
+    # Projected central lines
+    geom_line(data = projection %>%
+                filter(ci_type == "central"),
+              aes(x = projection_year,
+                  y = value,
+                  color = factor(weighted_decile),
+                  group = weighted_decile),
+              linetype = "dashed",
+              size = 1) +
+    # Transition line
+    geom_vline(xintercept = 2025,
+               linetype = "dashed",
+               color = "gray50") +
+    # Faceting
+    facet_grid(type ~ source, scales = "free_y") +
+    # Customize appearance
+    labs(
+      title = paste(country_name, "historical and projected energy consumption and bills by income decile"),
+      subtitle = "Solid lines = historical data, dashed lines = projections to 2050",
+      x = "Year",
+      y = NULL,
+      color = "Income Decile",
+      fill = "Income Decile"
+    ) +
+    theme_minimal() +
+    scale_color_viridis_d() +
+    scale_fill_viridis_d() +
+    # Use original y-axis settings (automatic limits)
+    scale_y_continuous(limits = c(0, NA), expand = c(0, 0)) +
+    theme(
+      legend.position = "bottom",
+      plot.title = element_text(face = "bold"),
+      plot.subtitle = element_text(size = 9),
+      strip.text = element_text(face = "bold"),
+      panel.spacing = unit(2, "lines")
+    )
+}
+
+# The rest of your code remains the same
+deu_enhanced_vis <- create_enhanced_vis(
+  deu_projections, 
+  historical_combined, 
+  "DEU")
+
+us_enhanced_vis <- create_enhanced_vis(
+  us_projections, 
+  historical_combined, 
+  "US")
+
+uk_enhanced_vis <- create_enhanced_vis(
+  uk_projections,
+  historical_combined, 
+  "UK")
+
+ggsave("deu_enhanced_projection.png", deu_enhanced_vis, width = 12, height = 8, dpi = 300)
+ggsave("uk_enhanced_projection.png", uk_enhanced_vis, width = 12, height = 8, dpi = 300)
+ggsave("us_enhanced_projection.png", us_enhanced_vis, width = 12, height = 8, dpi = 300)
+
+```
+### Distributional Analysis for Latex 
+```{r distributional visualizaiton for latex, include = FALSE}
+as.data.table(US)[, .(inc = weighted.mean(hh_income, weight)), by = 'weighted_decile'][order(weighted_decile)]
+as.data.table(DEU)[, .(inc = weighted.mean(hh_incomey, weight)), by = 'weighted_decile'][order(weighted_decile)]
+as.data.table(UK)[, .(inc = weighted.mean(hh_incomey, weight)), by = 'weighted_decile'][order(weighted_decile)]
+
+convert_rds_to_latex <- function(rds_file, caption = NULL, digits = 2) {
+  rds_file <- "Output/distributional_analysis.rds"
+  caption <- "Distributional Analysis"
+  data <- readRDS(rds_file)
+  base_name <- tools::file_path_sans_ext(basename(rds_file))
+  latex_table <- kable(data, format = "latex", booktabs = TRUE, 
+                       caption = caption, digits = digits) %>%
+    kable_styling(latex_options = c("striped", "scale_down", "hold_position"))
+  
+  output_file <- paste0(base_name, ".tex")
+  write(latex_table, output_file)
+  
+  cat("Converted", rds_file, "to", output_file, "\n")
+}
+
+convert_rds_to_latex("distributional_analysis.rds", 
+                     caption = "Distributional Analysis")
+
+
+readRDS("Output/distributional_analysis.rds") %>% as.data.table %>%
+  select(country, weighted_decile, 
+         total_annual_bill_2025, total_annual_bill_2050,
+         baseline_total_annual_bill_2025, baseline_total_annual_bill_2050,
+         absolute_change, percentage_change)
+
+```
 
 ```{r export to Overleaf, include = FALSE}
 library(knitr)
@@ -3607,6 +3810,14 @@ backloaded_results <- run_backloaded_scenario()
 
 
 compare_adoption_scenarios <- function(baseline, frontloaded, backloaded, country_code) {
+  # Convert country code to full name for display
+  country_name <- case_when(
+    country_code == "DEU" ~ "Germany",
+    country_code == "UK" ~ "United Kingdom",
+    country_code == "US" ~ "United States",
+    TRUE ~ country_code
+  )
+  
   # Extract projection data for the specified country
   baseline_data <- baseline[[country_code]]$projections %>% 
     filter(weighted_decile %in% c(1, 5, 10)) %>%
@@ -3626,22 +3837,22 @@ compare_adoption_scenarios <- function(baseline, frontloaded, backloaded, countr
   # Map deciles to meaningful labels
   combined_data <- combined_data %>%
     mutate(income_group = case_when(
-      weighted_decile == 1 ~ "Low Income (Q1)",
-      weighted_decile == 5 ~ "Middle Income (Q5)",
-      weighted_decile == 10 ~ "High Income (Q10)",
+      weighted_decile == 1 ~ "Low Income (D1)",
+      weighted_decile == 5 ~ "Middle Income (D5)",
+      weighted_decile == 10 ~ "High Income (D10)",
       TRUE ~ paste("Decile", weighted_decile)
     ))
   
   # Create visualization comparing scenarios
   ggplot(combined_data, 
          aes(x = projection_year, 
-             y = total_annual_bill, 
+             y = total_annual_bill,
              color = scenario,
              linetype = scenario)) +
     geom_line(size = 1.2) +
     facet_wrap(~income_group, scales = "free_y") +
     labs(
-      title = paste(country_code, "- Impact of Adoption Timing by Income Group"),
+      title = paste(country_name, "- Impact of Adoption Timing by Income Group"),
       subtitle = "Comparison of baseline, front-loaded, and back-loaded technology adoption",
       x = "Year",
       y = "Annual Energy Bill(log scaled)",
@@ -3657,38 +3868,41 @@ compare_adoption_scenarios <- function(baseline, frontloaded, backloaded, countr
     ) +
     scale_color_brewer(palette = "Set1") +
     scale_x_continuous(breaks = seq(2025, 2050, 5)) + 
-scale_y_continuous(trans = "log1p", breaks = pretty_breaks())}
+    scale_y_continuous(trans = "log1p", breaks = pretty_breaks())
+}
 
 deu_scenario_vis <- compare_adoption_scenarios(
   all_country_results,
   frontloaded_results,
   backloaded_results,
-  "DEU"
-)
+  "DEU")
 
 uk_scenario_vis <- compare_adoption_scenarios(
   all_country_results,
   frontloaded_results,
   backloaded_results,
-  "UK"
-)
+  "UK")
 
 us_scenario_vis <- compare_adoption_scenarios(
   all_country_results,
   frontloaded_results,
   backloaded_results,
-  "US"
-)
+  "US")
+
 ggsave("deu_income_scenarios.pdf", deu_scenario_vis, width = 10, height = 7)
 ggsave("uk_income_scenarios.pdf", uk_scenario_vis, width = 10, height = 7)
 ggsave("us_income_scenarios.pdf", us_scenario_vis, width = 10, height = 7)
 
-
-
-
-
 # Run the relative impacts comparison visualization
 compare_relative_impacts <- function(baseline, frontloaded, backloaded, country_code) {
+  # Convert country code to full name for display
+  country_name <- case_when(
+    country_code == "DEU" ~ "Germany",
+    country_code == "UK" ~ "United Kingdom",
+    country_code == "US" ~ "United States",
+    TRUE ~ country_code
+  )
+  
   # Calculate % differences from baseline for each scenario
   baseline_data <- baseline[[country_code]]$projections %>% 
     filter(weighted_decile %in% c(1, 5, 10)) %>%
@@ -3717,23 +3931,23 @@ compare_relative_impacts <- function(baseline, frontloaded, backloaded, country_
   # Combine and prepare for plotting
   combined_data <- bind_rows(frontloaded_data, backloaded_data) %>%
     mutate(income_group = case_when(
-      weighted_decile == 1 ~ "Low Income (Q1)",
-      weighted_decile == 5 ~ "Middle Income (Q5)",
-      weighted_decile == 10 ~ "High Income (Q10)",
+      weighted_decile == 1 ~ "Low Income (D1)",
+      weighted_decile == 5 ~ "Middle Income (D5)",
+      weighted_decile == 10 ~ "High Income (D10)",
       TRUE ~ paste("Decile", weighted_decile)
     ))
   
   # Create visualization
   ggplot(combined_data, 
          aes(x = projection_year, 
-             y = pct_change, 
+             y = pct_change,
              color = scenario,
              linetype = scenario)) +
     geom_line(size = 1.2) +
     geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
     facet_wrap(~income_group) +
     labs(
-      title = paste(country_code, "- Relative Impact of Different Adoption Scenarios"),
+      title = paste(country_name, "- Relative Impact of Different Adoption Scenarios"),
       subtitle = "Percentage change in annual energy bills compared to baseline scenario",
       x = "Year",
       y = "% Change from Baseline",
@@ -3748,23 +3962,19 @@ deu_relative_impacts <- compare_relative_impacts(
   all_country_results,
   frontloaded_results,
   backloaded_results,
-  "DEU"
-)
+  "DEU")
 
 uk_relative_impacts <- compare_relative_impacts(
   all_country_results,
   frontloaded_results,
   backloaded_results,
-  "UK"
-)
+  "UK")
 
 us_relative_impacts <- compare_relative_impacts(
   all_country_results,
   frontloaded_results,
   backloaded_results,
-  "US"
-)
-
+  "US")
 
 # Also save as PDF for vector graphics (better quality in LaTeX)
 ggsave("deu_relative_impacts.pdf", deu_relative_impacts, width = 10, height = 7)
